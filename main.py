@@ -286,6 +286,8 @@ Başla!
         task = (
             "Mağaza Adı: Mein Shop\n"
             "Hedef Pazar: global/EN\n"
+            "İş Modeli: Dropshipping (ürün fiziksel olarak elimde yok, tedarikçi "
+            "doğrudan müşteriye gönderiyor; ürün görselleri tedarikçiden mevcut)\n"
             "Ürünler:\n" + "\n".join(lines) + "\n"
             f"Bütçe: {budget}"
         )
