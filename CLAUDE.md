@@ -81,3 +81,16 @@ listed without a photo if this step fails.
 (default 300s) until `Ctrl+C`, which returns to the interactive menu rather
 than exiting the process. This is an in-process polling loop, not a
 scheduled task — the terminal must stay open for it to keep running.
+
+## Live panel
+
+`panel.py` starts a stdlib-only (`http.server`, no new dependency) HTTP
+server on a background daemon thread at program startup (`panel.start()` in
+`main()`), printing the URL to the console. It serves a single
+auto-refreshing HTML page (polls `/api/data` every 2s) showing agent count,
+automatic-mode status, last check time, and a live event table. Call sites
+(`process_order`, `check_shopify_orders`, `list_products`, `run_automatic`)
+report through `panel.log_event(kind, message, status)` and
+`panel.set_state(**kwargs)`. Events are also appended to
+`activity_log.jsonl` (gitignored) so history survives a restart — loaded
+back in on `panel.start()`.

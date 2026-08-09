@@ -7,6 +7,7 @@ from datetime import datetime
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+import panel
 import product_image
 from shopify_client import ShopifyClient
 
@@ -47,6 +48,7 @@ class MultiAgentSystem:
                 except Exception as e:
                     print(f"⚠️ {filename} yüklenemedi: {e}")
 
+        panel.set_state(agents_loaded=len(self.agents))
         if self.agents:
             print(f"✅ {len(self.agents)} ajan yüklendi\n")
         else:
@@ -108,10 +110,12 @@ Başla!
                 "response": result,
                 "timestamp": datetime.now().isoformat()
             })
+            panel.log_event("siparis", f"{order_id} işlendi: {order_description[:80]}", "success")
 
             return result
 
         except Exception as e:
+            panel.log_event("siparis", f"{order_id} başarısız: {e}", "error")
             print(f"❌ Hata: {e}")
             return None
 
@@ -171,12 +175,15 @@ Başla!
             return
 
         print(f"📦 {len(new_orders)} yeni sipariş bulundu\n")
+        panel.log_event("shopify", f"{len(new_orders)} yeni sipariş bulundu", "info")
         for order in new_orders:
             description = shopify.format_order_for_agent(order)
             self.process_order(description)
             try:
                 shopify.mark_processed(order)
             except Exception as e:
+                msg = f"Sipariş {order.get('name')} işaretlenemedi: {e}"
+                panel.log_event("shopify", msg, "error")
                 print(f"⚠️ Sipariş {order.get('name')} işlendi ama Shopify'da işaretlenemedi: {e}\n")
 
     def list_products(self):
@@ -231,7 +238,10 @@ Başla!
                     price=item.get("sell_price", 0),
                 )
                 print(f"✅ Shopify'a eklendi: {product.get('title')} (ID: {product.get('id')})\n")
+                msg = f"{product.get('title')} eklendi (ID: {product.get('id')})"
+                panel.log_event("urun", msg, "success")
             except Exception as e:
+                panel.log_event("urun", f"{item['name']} eklenemedi: {e}", "error")
                 print(f"❌ '{item['name']}' Shopify'a eklenemedi: {e}\n")
                 continue
 
@@ -243,34 +253,43 @@ Başla!
                 shopify.add_product_image(product["id"], image_data)
                 print("✅ Görsel Shopify'a yüklendi\n")
             except Exception as e:
+                panel.log_event("urun", f"{item['name']} görseli üretilemedi: {e}", "error")
                 print(f"⚠️ Görsel üretilemedi/yüklenemedi (ürün yine de eklendi): {e}\n")
 
     def run_automatic(self, interval_seconds=AUTO_INTERVAL_SECONDS):
         print(f"\n🤖 Otomatik mod başladı — her {interval_seconds} saniyede bir kontrol edilecek.")
         print("Durdurmak için Ctrl+C\n")
+        panel.set_state(automatic_mode=True)
         try:
             while True:
-                print(f"\n⏰ Kontrol zamanı: {datetime.now().strftime('%H:%M:%S')}")
+                now = datetime.now()
+                print(f"\n⏰ Kontrol zamanı: {now.strftime('%H:%M:%S')}")
+                panel.set_state(last_check=now.isoformat())
                 try:
                     self.list_products()
                 except Exception as e:
+                    panel.log_event("otomatik", f"Ürün listeleme hatası: {e}", "error")
                     print(f"❌ Ürün listeleme sırasında beklenmeyen hata: {e}\n")
                 try:
                     self.check_shopify_orders()
                 except Exception as e:
+                    panel.log_event("otomatik", f"Sipariş kontrolü hatası: {e}", "error")
                     print(f"❌ Sipariş kontrolü sırasında beklenmeyen hata: {e}\n")
                 print(f"😴 {interval_seconds} saniye bekleniyor...\n")
                 time.sleep(interval_seconds)
         except KeyboardInterrupt:
+            panel.set_state(automatic_mode=False)
             print("\n\n⏹️ Otomatik mod durduruldu, ana menüye dönülüyor.\n")
 
 
 def main():
+    panel_url = panel.start()
     system = MultiAgentSystem()
 
     print("\n" + "="*60)
     print("🚀 MULTI-AGENT SİPARİŞ YÖNETİM SİSTEMİ")
     print("="*60)
+    print(f"\n📊 Canlı panel: {panel_url}  (tarayıcıda açık tutabilirsiniz)")
     print("\n📌 Komutlar:")
     print("  1. Yeni sipariş gir (Örn: 'Müşteri Ahmet, iPhone case, 2 adet')")
     print("  2. 'ajan ORDER_AGENT' şeklinde spesifik ajan çağır")

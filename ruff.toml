@@ -3,3 +3,7 @@ target-version = "py312"
 
 [lint]
 select = ["E", "F", "I", "UP"]
+
+[lint.per-file-ignores]
+# Embedded HTML/CSS/JS template, not Python line-length conventions.
+"panel.py" = ["E501"]
