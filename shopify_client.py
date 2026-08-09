@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request
 
 PROCESSED_TAG = "ajans-islendi"
+REQUEST_TIMEOUT_SECONDS = 30
 
 
 class ShopifyClient:
@@ -39,7 +40,7 @@ class ShopifyClient:
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}
         )
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             payload = json.loads(resp.read())
 
         self._token = payload["access_token"]
@@ -55,7 +56,7 @@ class ShopifyClient:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
