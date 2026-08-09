@@ -251,8 +251,14 @@ Başla!
         try:
             while True:
                 print(f"\n⏰ Kontrol zamanı: {datetime.now().strftime('%H:%M:%S')}")
-                self.list_products()
-                self.check_shopify_orders()
+                try:
+                    self.list_products()
+                except Exception as e:
+                    print(f"❌ Ürün listeleme sırasında beklenmeyen hata: {e}\n")
+                try:
+                    self.check_shopify_orders()
+                except Exception as e:
+                    print(f"❌ Sipariş kontrolü sırasında beklenmeyen hata: {e}\n")
                 print(f"😴 {interval_seconds} saniye bekleniyor...\n")
                 time.sleep(interval_seconds)
         except KeyboardInterrupt:
