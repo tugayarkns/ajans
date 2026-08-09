@@ -80,6 +80,23 @@ class ShopifyClient:
             {"order": {"id": order["id"], "tags": ", ".join(existing)}},
         )
 
+    def get_existing_product_titles(self):
+        """Zaten Shopify'da olan urunlerin basliklarini dondurur (yinelemeyi onlemek icin)."""
+        result = self._request("GET", "/products.json?limit=250&fields=title")
+        return {p["title"] for p in result.get("products", [])}
+
+    def create_product(self, title, description_html, price):
+        body = {
+            "product": {
+                "title": title,
+                "body_html": description_html,
+                "status": "active",
+                "variants": [{"price": str(price)}],
+            }
+        }
+        result = self._request("POST", "/products.json", body)
+        return result.get("product")
+
     @staticmethod
     def format_order_for_agent(order):
         """Shopify siparisini Master Agent'in bekledigi serbest metin formatina cevirir."""

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from datetime import datetime
@@ -6,6 +7,8 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 from shopify_client import ShopifyClient
+
+PRODUCTS_FILE = "products.json"
 
 if sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -165,6 +168,61 @@ Başla!
             except Exception as e:
                 print(f"⚠️ Sipariş {order.get('name')} işlendi ama Shopify'da işaretlenemedi: {e}\n")
 
+    def list_products(self):
+        if "PRODUCT_AGENT" not in self.agents:
+            print("❌ Product Agent bulunamadı!\n")
+            return
+
+        if not os.path.exists(PRODUCTS_FILE):
+            print(f"❌ '{PRODUCTS_FILE}' bulunamadı!\n")
+            return
+
+        with open(PRODUCTS_FILE, encoding="utf-8") as f:
+            catalog = json.load(f)
+
+        if not catalog:
+            print(f"📭 '{PRODUCTS_FILE}' boş — eklenecek ürün yok\n")
+            return
+
+        try:
+            shopify = ShopifyClient()
+        except KeyError as e:
+            print(f"❌ Shopify ayarları eksik: {e} .env dosyasında tanımlı değil\n")
+            return
+
+        try:
+            existing_titles = shopify.get_existing_product_titles()
+        except Exception as e:
+            print(f"❌ Shopify'a bağlanılamadı: {e}\n")
+            return
+
+        new_items = [p for p in catalog if p["name"] not in existing_titles]
+        if not new_items:
+            print("📭 Kataloğdaki tüm ürünler zaten mağazada\n")
+            return
+
+        print(f"🛍️ {len(new_items)} yeni ürün listelenecek\n")
+        for item in new_items:
+            task = (
+                f"Ürün Adı: {item['name']}\n"
+                f"Maliyet: {item.get('cost_price', '?')} TL\n"
+                f"Satış Fiyatı: {item.get('sell_price', '?')} TL\n"
+                f"Ham Açıklama: {item.get('description', '(yok)')}"
+            )
+            agent_output = self.call_specific_agent("PRODUCT_AGENT", task)
+            if not agent_output:
+                continue
+
+            try:
+                product = shopify.create_product(
+                    title=item["name"],
+                    description_html=f"<p>{agent_output.replace(chr(10), '<br>')}</p>",
+                    price=item.get("sell_price", 0),
+                )
+                print(f"✅ Shopify'a eklendi: {product.get('title')} (ID: {product.get('id')})\n")
+            except Exception as e:
+                print(f"❌ '{item['name']}' Shopify'a eklenemedi: {e}\n")
+
 
 def main():
     system = MultiAgentSystem()
@@ -177,7 +235,8 @@ def main():
     print("  2. 'ajan ORDER_AGENT' şeklinde spesifik ajan çağır")
     print("  3. 'loglar' yazarak tüm siparişleri göster")
     print("  4. 'shopify' yazarak mağazadaki yeni siparişleri işle")
-    print("  5. 'çık' yazarak programı kapat\n")
+    print("  5. 'urunler' yazarak products.json'daki yeni ürünleri mağazaya ekle")
+    print("  6. 'çık' yazarak programı kapat\n")
 
     while True:
         try:
@@ -195,6 +254,9 @@ def main():
 
             elif user_input.lower() == "shopify":
                 system.check_shopify_orders()
+
+            elif user_input.lower() == "urunler":
+                system.list_products()
 
             elif user_input.lower().startswith("ajan "):
                 agent_name = user_input[5:].strip()
