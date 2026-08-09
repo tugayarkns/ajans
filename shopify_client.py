@@ -97,6 +97,11 @@ class ShopifyClient:
         result = self._request("POST", "/products.json", body)
         return result.get("product")
 
+    def add_product_image(self, product_id, base64_image):
+        body = {"image": {"attachment": base64_image}}
+        result = self._request("POST", f"/products/{product_id}/images.json", body)
+        return result.get("image")
+
     @staticmethod
     def format_order_for_agent(order):
         """Shopify siparisini Master Agent'in bekledigi serbest metin formatina cevirir."""

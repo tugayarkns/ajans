@@ -1,14 +1,17 @@
 import json
 import os
 import sys
+import time
 from datetime import datetime
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+import product_image
 from shopify_client import ShopifyClient
 
 PRODUCTS_FILE = "products.json"
+AUTO_INTERVAL_SECONDS = 300
 
 if sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -222,6 +225,30 @@ Başla!
                 print(f"✅ Shopify'a eklendi: {product.get('title')} (ID: {product.get('id')})\n")
             except Exception as e:
                 print(f"❌ '{item['name']}' Shopify'a eklenemedi: {e}\n")
+                continue
+
+            print("🎨 Yapay zeka manken görseli üretiliyor...")
+            try:
+                image_data = product_image.generate_model_photo(
+                    item["name"], item.get("description", "")
+                )
+                shopify.add_product_image(product["id"], image_data)
+                print("✅ Görsel Shopify'a yüklendi\n")
+            except Exception as e:
+                print(f"⚠️ Görsel üretilemedi/yüklenemedi (ürün yine de eklendi): {e}\n")
+
+    def run_automatic(self, interval_seconds=AUTO_INTERVAL_SECONDS):
+        print(f"\n🤖 Otomatik mod başladı — her {interval_seconds} saniyede bir kontrol edilecek.")
+        print("Durdurmak için Ctrl+C\n")
+        try:
+            while True:
+                print(f"\n⏰ Kontrol zamanı: {datetime.now().strftime('%H:%M:%S')}")
+                self.list_products()
+                self.check_shopify_orders()
+                print(f"😴 {interval_seconds} saniye bekleniyor...\n")
+                time.sleep(interval_seconds)
+        except KeyboardInterrupt:
+            print("\n\n⏹️ Otomatik mod durduruldu, ana menüye dönülüyor.\n")
 
 
 def main():
@@ -236,7 +263,8 @@ def main():
     print("  3. 'loglar' yazarak tüm siparişleri göster")
     print("  4. 'shopify' yazarak mağazadaki yeni siparişleri işle")
     print("  5. 'urunler' yazarak products.json'daki yeni ürünleri mağazaya ekle")
-    print("  6. 'çık' yazarak programı kapat\n")
+    print("  6. 'otomatik' yazarak sürekli çalışan modu başlat (Ctrl+C ile durdur)")
+    print("  7. 'çık' yazarak programı kapat\n")
 
     while True:
         try:
@@ -257,6 +285,9 @@ def main():
 
             elif user_input.lower() == "urunler":
                 system.list_products()
+
+            elif user_input.lower() == "otomatik":
+                system.run_automatic()
 
             elif user_input.lower().startswith("ajan "):
                 agent_name = user_input[5:].strip()

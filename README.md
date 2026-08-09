@@ -4,7 +4,9 @@ Anthropic API üzerinden çalışan, Türkçe bir çoklu-ajan sipariş yönetim
 sistemi. Bir "Master Agent" gelen siparişi analiz eder ve sırasıyla
 Order → Supplier → Payment → Shipping → Notify ajanlarını yönlendirir.
 Gerçek bir Shopify mağazasına bağlanır: `shopify` komutu mağazadaki yeni
-siparişleri çekip otomatik olarak bu ajan zincirinden geçirir.
+siparişleri çekip otomatik olarak bu ajan zincirinden geçirir, `urunler`
+komutu ise yeni ürünleri (yapay zeka manken görseliyle birlikte) mağazaya
+ekler. `otomatik` komutuyla ikisi de sürekli, kendi kendine çalışır.
 
 ## Ajanlar
 
@@ -16,6 +18,7 @@ siparişleri çekip otomatik olarak bu ajan zincirinden geçirir.
 | `PAYMENT_AGENT` | Ödeme akışını yönetir |
 | `SHIPPING_AGENT` | Kargo firması seçer, gönderim yapar |
 | `NOTIFY_AGENT` | Müşteriye bildirim gönderir |
+| `PRODUCT_AGENT` | Yeni ürünleri fiyat/açıklama açısından değerlendirir |
 
 ## Kurulum
 
@@ -32,12 +35,15 @@ ANTHROPIC_API_KEY=<Anthropic API anahtarın>
 SHOPIFY_STORE_DOMAIN=<magaza-adin>.myshopify.com
 SHOPIFY_CLIENT_ID=<Shopify custom app Client ID>
 SHOPIFY_CLIENT_SECRET=<Shopify custom app Client Secret>
+OPENAI_API_KEY=<OpenAI API anahtarın>
 ```
 
 Shopify tarafında bir **custom app** (Dev Dashboard üzerinden) oluşturup
-`read_orders, write_orders, read_products, read_fulfillments,
-write_fulfillments, read_customers` izinleriyle mağazana kurman gerekiyor —
-detaylar için [`CLAUDE.md`](./CLAUDE.md) → "Shopify integration" bölümüne bak.
+`read_orders, write_orders, read_products, write_products,
+read_fulfillments, write_fulfillments, read_customers` izinleriyle mağazana
+kurman gerekiyor — detaylar için [`CLAUDE.md`](./CLAUDE.md) → "Shopify
+integration" bölümüne bak. `OPENAI_API_KEY`, ürün görseli üretimi için
+platform.openai.com üzerinden alınır (Anthropic'ten ayrı bir hesap/anahtar).
 
 ## Komutlar (uygulama içi)
 
@@ -47,6 +53,11 @@ detaylar için [`CLAUDE.md`](./CLAUDE.md) → "Shopify integration" bölümüne 
 - `shopify` → mağazadaki ödemesi tamamlanmış, henüz işlenmemiş siparişleri
   çekip ajan zincirinden geçirir (her sipariş Shopify'da `ajans-islendi`
   etiketiyle işaretlenir, tekrar işlenmez)
+- `urunler` → `products.json`'daki yeni ürünleri (henüz mağazada olmayanları)
+  Product Agent'tan geçirip Shopify'a ekler, yapay zeka manken görseli üretip
+  ürüne yükler
+- `otomatik` → `urunler` + `shopify`'ı sırayla, sürekli (varsayılan 5 dakikada
+  bir) tekrarlar; durdurmak için Ctrl+C (programı kapatmaz, menüye döner)
 - `çık` → programı kapatır
 
 ## Yeni ajan ekleme

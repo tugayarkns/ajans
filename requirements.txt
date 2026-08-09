@@ -1,4 +1,5 @@
 anthropic>=0.40.0
+openai>=1.50.0
 python-dotenv==1.0.0
 ruff>=0.8.0
 # Windows'ta bazı antivirüs/VPN yazılımları SSL trafiğini incelediği için

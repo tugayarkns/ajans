@@ -20,6 +20,7 @@ Requires in `.env` (loaded via `python-dotenv`):
 - `ANTHROPIC_API_KEY`
 - `SHOPIFY_STORE_DOMAIN` (e.g. `norvexget.myshopify.com`)
 - `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET` (custom app credentials, see below)
+- `OPENAI_API_KEY` (product model-photo generation, see below)
 
 Lint: `ruff check .` (config in `ruff.toml`).
 
@@ -61,4 +62,22 @@ unfulfilled orders, skips ones already tagged `ajans-islendi`, formats each
 into the same free-text description `process_order()` expects, runs it
 through the normal agent pipeline, then tags the order `ajans-islendi` in
 Shopify so it isn't reprocessed. There is no webhook listener — this is
-pull-based polling, triggered manually by the `shopify` command.
+pull-based polling.
+
+## Product image generation
+
+`product_image.py` calls OpenAI's `gpt-image-2` model (`client.images.generate`,
+**not** the Anthropic API — Claude has no image generation) to produce an
+AI-model product photo, returned as base64 PNG. `list_products()` uploads it
+to the newly-created Shopify product via `ShopifyClient.add_product_image()`
+(`POST /products/{id}/images.json`). Image generation failure is caught and
+logged but does not roll back the product creation — the product stays
+listed without a photo if this step fails.
+
+## Automatic mode
+
+`MultiAgentSystem.run_automatic()` (menu command `otomatik`) loops
+`list_products()` + `check_shopify_orders()` every `AUTO_INTERVAL_SECONDS`
+(default 300s) until `Ctrl+C`, which returns to the interactive menu rather
+than exiting the process. This is an in-process polling loop, not a
+scheduled task — the terminal must stay open for it to keep running.
