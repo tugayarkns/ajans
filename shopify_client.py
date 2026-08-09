@@ -86,6 +86,22 @@ class ShopifyClient:
         result = self._request("GET", "/products.json?limit=250&fields=title")
         return {p["title"] for p in result.get("products", [])}
 
+    def get_active_products(self):
+        """Magazada aktif/yayinda olan urunleri basit bir listede dondurur."""
+        result = self._request(
+            "GET", "/products.json?status=active&limit=250&fields=title,body_html,variants"
+        )
+        products = []
+        for p in result.get("products", []):
+            variants = p.get("variants", [])
+            prices = [float(v["price"]) for v in variants if v.get("price")]
+            products.append({
+                "title": p["title"],
+                "price_min": min(prices) if prices else None,
+                "price_max": max(prices) if prices else None,
+            })
+        return products
+
     def create_product(self, title, description_html, price):
         body = {
             "product": {

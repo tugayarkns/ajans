@@ -119,7 +119,7 @@ Başla!
             print(f"❌ Hata: {e}")
             return None
 
-    def call_specific_agent(self, agent_name, task):
+    def call_specific_agent(self, agent_name, task, max_tokens=1000):
         agent_name = agent_name.upper()
 
         if agent_name not in self.agents:
@@ -131,7 +131,7 @@ Başla!
         try:
             response = client.messages.create(
                 model=MODEL,
-                max_tokens=1000,
+                max_tokens=max_tokens,
                 system=self.agents[agent_name],
                 messages=[{"role": "user", "content": task}]
             )
@@ -256,6 +256,46 @@ Başla!
                 panel.log_event("urun", f"{item['name']} görseli üretilemedi: {e}", "error")
                 print(f"⚠️ Görsel üretilemedi/yüklenemedi (ürün yine de eklendi): {e}\n")
 
+    def run_marketing(self, budget="yok"):
+        if "MARKETING_AGENT" not in self.agents:
+            print("❌ Marketing Agent bulunamadı!\n")
+            return
+
+        try:
+            shopify = ShopifyClient()
+        except KeyError as e:
+            print(f"❌ Shopify ayarları eksik: {e} .env dosyasında tanımlı değil\n")
+            return
+
+        try:
+            products = shopify.get_active_products()
+        except Exception as e:
+            print(f"❌ Shopify'a bağlanılamadı: {e}\n")
+            return
+
+        if not products:
+            print("📭 Mağazada aktif ürün yok, önce ürün eklemelisiniz\n")
+            return
+
+        lines = []
+        for p in products:
+            price = p["price_min"]
+            if p["price_min"] != p["price_max"]:
+                price = f"{p['price_min']}-{p['price_max']}"
+            lines.append(f"{p['title']} - {price} EUR")
+        task = (
+            "Mağaza Adı: Mein Shop\n"
+            "Hedef Pazar: global/EN\n"
+            "Ürünler:\n" + "\n".join(lines) + "\n"
+            f"Bütçe: {budget}"
+        )
+
+        print(f"\n📣 {len(products)} ürün için pazarlama planı hazırlanıyor...\n")
+        result = self.call_specific_agent("MARKETING_AGENT", task, max_tokens=12000)
+        if result:
+            panel.log_event("pazarlama", f"{len(products)} ürün için plan üretildi", "success")
+        return result
+
     def run_automatic(self, interval_seconds=AUTO_INTERVAL_SECONDS):
         print(f"\n🤖 Otomatik mod başladı — her {interval_seconds} saniyede bir kontrol edilecek.")
         print("Durdurmak için Ctrl+C\n")
@@ -297,7 +337,8 @@ def main():
     print("  4. 'shopify' yazarak mağazadaki yeni siparişleri işle")
     print("  5. 'urunler' yazarak products.json'daki yeni ürünleri mağazaya ekle")
     print("  6. 'otomatik' yazarak sürekli çalışan modu başlat (Ctrl+C ile durdur)")
-    print("  7. 'çık' yazarak programı kapat\n")
+    print("  7. 'pazarlama' yazarak ücretsiz müşteri bulma planı üret")
+    print("  8. 'çık' yazarak programı kapat\n")
 
     while True:
         try:
@@ -321,6 +362,9 @@ def main():
 
             elif user_input.lower() == "otomatik":
                 system.run_automatic()
+
+            elif user_input.lower() == "pazarlama":
+                system.run_marketing()
 
             elif user_input.lower().startswith("ajan "):
                 agent_name = user_input[5:].strip()
