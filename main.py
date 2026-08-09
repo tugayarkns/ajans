@@ -1,8 +1,14 @@
 import os
+import sys
 from anthropic import Anthropic
 from dotenv import load_dotenv
 import json
 from datetime import datetime
+
+if sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+    sys.stdin.reconfigure(encoding="utf-8")
 
 load_dotenv()
 
@@ -166,7 +172,7 @@ def main():
             else:
                 system.process_order(user_input)
 
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             print("\n\n👋 Program durduruldu\n")
             break
         except Exception as e:
