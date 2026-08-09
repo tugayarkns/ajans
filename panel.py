@@ -75,31 +75,106 @@ _PAGE_HTML = """<!doctype html>
 <html lang="tr">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AJANS Panel</title>
 <style>
-  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; background:#0f1117; color:#e6e6e6; margin:0; padding:24px; }
-  h1 { font-size:20px; margin:0 0 16px; }
-  .cards { display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
-  .card { background:#1a1d27; border:1px solid #2a2e3a; border-radius:8px; padding:12px 16px; min-width:160px; }
-  .card .label { font-size:12px; color:#9aa1af; }
-  .card .value { font-size:18px; font-weight:600; margin-top:4px; }
+  :root {
+    --bg: #0b0d12;
+    --panel: #14161e;
+    --panel-border: #262a38;
+    --text: #e8e9ed;
+    --muted: #8b90a0;
+    --accent: #6d8dfa;
+    --green: #34d399;
+    --red: #f87171;
+    --gray: #8b90a0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", -apple-system, Inter, Arial, sans-serif;
+    background:
+      radial-gradient(1200px 500px at 15% -10%, rgba(109,141,250,0.10), transparent),
+      var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 32px 40px 60px;
+    min-height: 100vh;
+  }
+  .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; flex-wrap:wrap; gap:12px; }
+  .brand { display:flex; align-items:center; gap:12px; }
+  .brand .mark {
+    width:36px; height:36px; border-radius:10px;
+    background:linear-gradient(135deg, var(--accent), #a78bfa);
+    display:flex; align-items:center; justify-content:center;
+    font-weight:700; font-size:15px; color:#0b0d12;
+  }
+  .brand h1 { font-size:18px; margin:0; font-weight:600; letter-spacing:.2px; }
+  .brand .sub { font-size:12px; color:var(--muted); margin-top:2px; }
+  .live { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); background:var(--panel); border:1px solid var(--panel-border); padding:6px 12px; border-radius:999px; }
+  .live .dot { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(52,211,153,.6); animation:pulse 2s infinite; }
+  @keyframes pulse {
+    0% { box-shadow:0 0 0 0 rgba(52,211,153,.55); }
+    70% { box-shadow:0 0 0 7px rgba(52,211,153,0); }
+    100% { box-shadow:0 0 0 0 rgba(52,211,153,0); }
+  }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:14px; margin-bottom:28px; }
+  .card { background:var(--panel); border:1px solid var(--panel-border); border-radius:12px; padding:16px 18px; position:relative; overflow:hidden; }
+  .card::before { content:""; position:absolute; inset:0 auto 0 0; width:3px; background:var(--accent); opacity:.8; }
+  .card .label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; font-weight:600; }
+  .card .value { font-size:22px; font-weight:700; margin-top:8px; letter-spacing:.2px; }
+  .card .value.on { color:var(--green); }
+  .card .value.off { color:var(--muted); }
+  .panel-section { background:var(--panel); border:1px solid var(--panel-border); border-radius:12px; overflow:hidden; }
+  .panel-section .head { padding:16px 20px; border-bottom:1px solid var(--panel-border); display:flex; align-items:center; justify-content:space-between; }
+  .panel-section .head h2 { font-size:14px; margin:0; font-weight:600; }
+  .panel-section .head .count { font-size:12px; color:var(--muted); }
   table { width:100%; border-collapse:collapse; font-size:13px; }
-  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #232733; }
-  th { color:#9aa1af; font-weight:500; }
-  .status-success { color:#4ade80; }
-  .status-error { color:#f87171; }
-  .status-info { color:#9aa1af; }
-  .kind { color:#7aa2f7; font-family:monospace; }
+  th, td { text-align:left; padding:11px 20px; border-bottom:1px solid var(--panel-border); }
+  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  tbody tr:hover { background:rgba(255,255,255,0.02); }
+  tbody tr:last-child td { border-bottom:none; }
+  td.time { color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .kind { color:var(--accent); font-family:ui-monospace, SFMono-Regular, Consolas, monospace; font-size:12px; background:rgba(109,141,250,0.1); padding:3px 8px; border-radius:6px; }
+  .badge { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600; padding:3px 10px; border-radius:999px; text-transform:uppercase; letter-spacing:.4px; }
+  .badge::before { content:""; width:6px; height:6px; border-radius:50%; }
+  .badge.success { color:var(--green); background:rgba(52,211,153,0.12); }
+  .badge.success::before { background:var(--green); }
+  .badge.error { color:var(--red); background:rgba(248,113,113,0.12); }
+  .badge.error::before { background:var(--red); }
+  .badge.info { color:var(--gray); background:rgba(139,144,160,0.12); }
+  .badge.info::before { background:var(--gray); }
+  .empty { padding:40px 20px; text-align:center; color:var(--muted); font-size:13px; }
 </style>
 </head>
 <body>
-  <h1>AJANS &mdash; Canli Panel</h1>
+  <div class="topbar">
+    <div class="brand">
+      <div class="mark">A</div>
+      <div>
+        <h1>AJANS Panel</h1>
+        <div class="sub">Multi-agent siparis yonetimi &middot; canli izleme</div>
+      </div>
+    </div>
+    <div class="live"><span class="dot"></span> Canli &middot; 2sn'de bir yenilenir</div>
+  </div>
+
   <div class="cards" id="cards"></div>
-  <table>
-    <thead><tr><th>Zaman</th><th>Tip</th><th>Mesaj</th><th>Durum</th></tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
+
+  <div class="panel-section">
+    <div class="head">
+      <h2>Olay Akisi</h2>
+      <span class="count" id="event-count"></span>
+    </div>
+    <table>
+      <thead><tr><th>Zaman</th><th>Tip</th><th>Mesaj</th><th>Durum</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
 <script>
+function timeAgo(iso) {
+  return new Date(iso).toLocaleTimeString('tr-TR');
+}
 async function refresh() {
   try {
     const res = await fetch('/api/data');
@@ -107,18 +182,20 @@ async function refresh() {
     const s = data.state;
     document.getElementById('cards').innerHTML = `
       <div class="card"><div class="label">Yuklu Ajan</div><div class="value">${s.agents_loaded}</div></div>
-      <div class="card"><div class="label">Otomatik Mod</div><div class="value">${s.automatic_mode ? 'Calisiyor' : 'Kapali'}</div></div>
-      <div class="card"><div class="label">Son Kontrol</div><div class="value">${s.last_check ? new Date(s.last_check).toLocaleTimeString() : '-'}</div></div>
-      <div class="card"><div class="label">Baslangic</div><div class="value">${new Date(s.started_at).toLocaleString()}</div></div>
+      <div class="card"><div class="label">Otomatik Mod</div><div class="value ${s.automatic_mode ? 'on' : 'off'}">${s.automatic_mode ? 'Calisiyor' : 'Kapali'}</div></div>
+      <div class="card"><div class="label">Son Kontrol</div><div class="value">${s.last_check ? timeAgo(s.last_check) : '—'}</div></div>
+      <div class="card"><div class="label">Baslangic</div><div class="value">${new Date(s.started_at).toLocaleString('tr-TR')}</div></div>
     `;
-    document.getElementById('rows').innerHTML = data.events.map(e => `
+    const countEl = document.getElementById('event-count');
+    countEl.textContent = data.events.length ? `${data.events.length} olay` : '';
+    document.getElementById('rows').innerHTML = data.events.length ? data.events.map(e => `
       <tr>
-        <td>${new Date(e.time).toLocaleTimeString()}</td>
-        <td class="kind">${e.kind}</td>
+        <td class="time">${timeAgo(e.time)}</td>
+        <td><span class="kind">${e.kind}</span></td>
         <td>${e.message}</td>
-        <td class="status-${e.status}">${e.status}</td>
+        <td><span class="badge ${e.status}">${e.status}</span></td>
       </tr>
-    `).join('');
+    `).join('') : '<tr><td colspan="4" class="empty">Henuz olay yok — bir siparis veya urun islendiginde burada gorunecek.</td></tr>';
   } catch (err) { /* sunucu henuz hazir olmayabilir, sessizce tekrar dene */ }
 }
 refresh();
