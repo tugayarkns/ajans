@@ -1,8 +1,10 @@
 # AJANS — Multi-Agent Sipariş Yönetim Sistemi
 
 Anthropic API üzerinden çalışan, Türkçe bir çoklu-ajan sipariş yönetim
-demosu. Bir "Master Agent" gelen siparişi analiz eder ve sırasıyla
+sistemi. Bir "Master Agent" gelen siparişi analiz eder ve sırasıyla
 Order → Supplier → Payment → Shipping → Notify ajanlarını yönlendirir.
+Gerçek bir Shopify mağazasına bağlanır: `shopify` komutu mağazadaki yeni
+siparişleri çekip otomatik olarak bu ajan zincirinden geçirir.
 
 ## Ajanlar
 
@@ -22,14 +24,29 @@ pip install -r requirements.txt
 python main.py
 ```
 
-`.env` dosyasında `ANTHROPIC_API_KEY=<kendi-anahtarın>` tanımlı olmalı
-(`.env` `.gitignore` ile takip dışı bırakılmıştır).
+`.env` dosyasında şunlar tanımlı olmalı (`.env` `.gitignore` ile takip dışı
+bırakılmıştır):
+
+```
+ANTHROPIC_API_KEY=<Anthropic API anahtarın>
+SHOPIFY_STORE_DOMAIN=<magaza-adin>.myshopify.com
+SHOPIFY_CLIENT_ID=<Shopify custom app Client ID>
+SHOPIFY_CLIENT_SECRET=<Shopify custom app Client Secret>
+```
+
+Shopify tarafında bir **custom app** (Dev Dashboard üzerinden) oluşturup
+`read_orders, write_orders, read_products, read_fulfillments,
+write_fulfillments, read_customers` izinleriyle mağazana kurman gerekiyor —
+detaylar için [`CLAUDE.md`](./CLAUDE.md) → "Shopify integration" bölümüne bak.
 
 ## Komutlar (uygulama içi)
 
 - Serbest metin → yeni sipariş olarak işlenir (Master Agent çağrılır)
 - `ajan <AGENT_ADI>` → belirli bir ajanı doğrudan çağırır (örn. `ajan ORDER_AGENT`)
 - `loglar` → işlenen siparişleri listeler
+- `shopify` → mağazadaki ödemesi tamamlanmış, henüz işlenmemiş siparişleri
+  çekip ajan zincirinden geçirir (her sipariş Shopify'da `ajans-islendi`
+  etiketiyle işaretlenir, tekrar işlenmez)
 - `çık` → programı kapatır
 
 ## Yeni ajan ekleme

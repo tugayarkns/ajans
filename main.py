@@ -1,9 +1,11 @@
 import os
 import sys
+from datetime import datetime
+
 from anthropic import Anthropic
 from dotenv import load_dotenv
-import json
-from datetime import datetime
+
+from shopify_client import ShopifyClient
 
 if sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -34,7 +36,7 @@ class MultiAgentSystem:
             if filename.endswith(".md"):
                 agent_name = filename.replace(".md", "").upper()
                 try:
-                    with open(f"{agents_dir}/{filename}", "r", encoding="utf-8") as f:
+                    with open(f"{agents_dir}/{filename}", encoding="utf-8") as f:
                         self.agents[agent_name] = f.read()
                 except Exception as e:
                     print(f"⚠️ {filename} yüklenemedi: {e}")
@@ -136,6 +138,33 @@ Başla!
             print(f"{i}. {order['order_id']} - {order['description']}")
             print(f"   Zaman: {order['timestamp']}\n")
 
+    def check_shopify_orders(self):
+        try:
+            shopify = ShopifyClient()
+        except KeyError as e:
+            print(f"❌ Shopify ayarları eksik: {e} .env dosyasında tanımlı değil\n")
+            return
+
+        print("\n🔄 Shopify'da yeni sipariş kontrol ediliyor...\n")
+        try:
+            new_orders = shopify.get_new_orders()
+        except Exception as e:
+            print(f"❌ Shopify'a bağlanılamadı: {e}\n")
+            return
+
+        if not new_orders:
+            print("📭 İşlenecek yeni sipariş yok\n")
+            return
+
+        print(f"📦 {len(new_orders)} yeni sipariş bulundu\n")
+        for order in new_orders:
+            description = shopify.format_order_for_agent(order)
+            self.process_order(description)
+            try:
+                shopify.mark_processed(order)
+            except Exception as e:
+                print(f"⚠️ Sipariş {order.get('name')} işlendi ama Shopify'da işaretlenemedi: {e}\n")
+
 
 def main():
     system = MultiAgentSystem()
@@ -147,7 +176,8 @@ def main():
     print("  1. Yeni sipariş gir (Örn: 'Müşteri Ahmet, iPhone case, 2 adet')")
     print("  2. 'ajan ORDER_AGENT' şeklinde spesifik ajan çağır")
     print("  3. 'loglar' yazarak tüm siparişleri göster")
-    print("  4. 'çık' yazarak programı kapat\n")
+    print("  4. 'shopify' yazarak mağazadaki yeni siparişleri işle")
+    print("  5. 'çık' yazarak programı kapat\n")
 
     while True:
         try:
@@ -162,6 +192,9 @@ def main():
 
             elif user_input.lower() == "loglar":
                 system.show_logs()
+
+            elif user_input.lower() == "shopify":
+                system.check_shopify_orders()
 
             elif user_input.lower().startswith("ajan "):
                 agent_name = user_input[5:].strip()
