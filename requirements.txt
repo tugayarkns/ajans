@@ -1,3 +1,7 @@
 anthropic>=0.40.0
 python-dotenv==1.0.0
 ruff>=0.8.0
+# Windows'ta bazı antivirüs/VPN yazılımları SSL trafiğini incelediği için
+# certifi'nin güvenmediği bir kök sertifika kullanabilir. Bu paket Python'u
+# Windows'un kendi sertifika deposunu kullanmaya zorlar.
+pip-system-certs>=4.0; sys_platform == "win32"
