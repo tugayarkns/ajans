@@ -61,14 +61,25 @@ integration" bölümüne bak.
 - `shopify` → mağazadaki ödemesi tamamlanmış, henüz işlenmemiş siparişleri
   çekip ajan zincirinden geçirir (her sipariş Shopify'da `ajans-islendi`
   etiketiyle işaretlenir, tekrar işlenmez)
+- `ebay` → eBay'deki kargolanmamış siparişleri çekip aynı ajan zincirinden
+  geçirir (işlenenler `inventory.db`'de kaydedilir, tekrar işlenmez)
 - `urunler` → `products.json`'daki yeni ürünleri (henüz mağazada olmayanları)
   Product Agent'tan geçirip Shopify'a ekler, yapay zeka manken görseli üretip
   ürüne yükler
-- `otomatik` → `urunler` + `shopify`'ı sırayla, sürekli (varsayılan 5 dakikada
-  bir) tekrarlar; durdurmak için Ctrl+C (programı kapatmaz, menüye döner)
+- `otomatik` → `urunler` + `shopify` + `ebay`'i sırayla, sürekli (varsayılan
+  5 dakikada bir) tekrarlar; durdurmak için Ctrl+C (programı kapatmaz,
+  menüye döner)
 - `pazarlama` → mağazadaki aktif ürünler için Marketing Agent'tan ücretsiz
   müşteri kazanım planı üretir
 - `çık` → programı kapatır
+
+## ⚠️ Sipariş geldiğinde ne olur (önemli)
+
+Ajanlar siparişi analiz edip metin üretir, ama **tedarikçiye (DSers/AliExpress)
+gerçek sipariş geçmez** — kargo da göndermez. Bu yüzden her işlenen siparişten
+sonra panele kırmızı bir "ELLE İŞLEM GEREKİYOR" uyarısı düşer ve hangi
+üründen kaç adet sipariş etmeniz gerektiğini yazar. Satış geldiğinde
+tedarikçi siparişini elle geçmeniz gerekir.
 
 ## Canlı panel ve ürün onay kuyruğu
 
