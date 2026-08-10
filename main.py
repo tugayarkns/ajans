@@ -277,6 +277,11 @@ Başla!
             print("📭 Mağazada aktif ürün yok, önce ürün eklemelisiniz\n")
             return
 
+        try:
+            shop_name = shopify.get_shop_name()
+        except Exception:
+            shop_name = shopify.domain
+
         lines = []
         for p in products:
             price = p["price_min"]
@@ -284,7 +289,7 @@ Başla!
                 price = f"{p['price_min']}-{p['price_max']}"
             lines.append(f"{p['title']} - {price} EUR")
         task = (
-            "Mağaza Adı: Mein Shop\n"
+            f"Mağaza Adı: {shop_name}\n"
             "Hedef Pazar: global/EN\n"
             "İş Modeli: Dropshipping (ürün fiziksel olarak elimde yok, tedarikçi "
             "doğrudan müşteriye gönderiyor; ürün görselleri tedarikçiden mevcut)\n"

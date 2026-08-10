@@ -175,6 +175,11 @@ _PAGE_HTML = """<!doctype html>
 function timeAgo(iso) {
   return new Date(iso).toLocaleTimeString('tr-TR');
 }
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = String(str);
+  return div.innerHTML;
+}
 async function refresh() {
   try {
     const res = await fetch('/api/data');
@@ -191,9 +196,9 @@ async function refresh() {
     document.getElementById('rows').innerHTML = data.events.length ? data.events.map(e => `
       <tr>
         <td class="time">${timeAgo(e.time)}</td>
-        <td><span class="kind">${e.kind}</span></td>
-        <td>${e.message}</td>
-        <td><span class="badge ${e.status}">${e.status}</span></td>
+        <td><span class="kind">${escapeHtml(e.kind)}</span></td>
+        <td>${escapeHtml(e.message)}</td>
+        <td><span class="badge ${escapeHtml(e.status)}">${escapeHtml(e.status)}</span></td>
       </tr>
     `).join('') : '<tr><td colspan="4" class="empty">Henuz olay yok — bir siparis veya urun islendiginde burada gorunecek.</td></tr>';
   } catch (err) { /* sunucu henuz hazir olmayabilir, sessizce tekrar dene */ }

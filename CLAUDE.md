@@ -55,7 +55,9 @@ Required Admin API scopes on the app (set in Dev Dashboard → app →
 Versions → new version → Scopes, then re-run "Install app" to refresh the
 grant — deploying a new version alone does *not* update an already-installed
 app's permissions): `read_orders, write_orders, read_products,
-read_fulfillments, write_fulfillments, read_customers`.
+write_products, read_fulfillments, write_fulfillments, read_customers`.
+`write_products` is required for `create_product()` / `add_product_image()` /
+`update_variant_sku()` in `shopify_client.py`.
 
 The `shopify` command in `main.py` polls `GET /orders.json` for open,
 unfulfilled orders, skips ones already tagged `ajans-islendi`, formats each

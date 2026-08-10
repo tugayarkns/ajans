@@ -86,6 +86,11 @@ class ShopifyClient:
         result = self._request("GET", "/products.json?limit=250&fields=title")
         return {p["title"] for p in result.get("products", [])}
 
+    def get_shop_name(self):
+        """Magazanin goruntu adini dondurur (pazarlama metinlerinde kullanilmak uzere)."""
+        result = self._request("GET", "/shop.json")
+        return result.get("shop", {}).get("name") or self.domain
+
     def get_active_products(self):
         """Magazada aktif/yayinda olan urunleri basit bir listede dondurur."""
         result = self._request(

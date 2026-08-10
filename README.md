@@ -19,6 +19,8 @@ ekler. `otomatik` komutuyla ikisi de sürekli, kendi kendine çalışır.
 | `SHIPPING_AGENT` | Kargo firması seçer, gönderim yapar |
 | `NOTIFY_AGENT` | Müşteriye bildirim gönderir |
 | `PRODUCT_AGENT` | Yeni ürünleri fiyat/açıklama açısından değerlendirir |
+| `MARKETING_AGENT` | Ücretsiz kanallardan müşteri kazanım planı üretir |
+| `SUPPORT_AGENT` | Müşteri destek/iade mesajlarını yanıtlar |
 
 ## Kurulum
 
@@ -58,6 +60,8 @@ platform.openai.com üzerinden alınır (Anthropic'ten ayrı bir hesap/anahtar).
   ürüne yükler
 - `otomatik` → `urunler` + `shopify`'ı sırayla, sürekli (varsayılan 5 dakikada
   bir) tekrarlar; durdurmak için Ctrl+C (programı kapatmaz, menüye döner)
+- `pazarlama` → mağazadaki aktif ürünler için Marketing Agent'tan ücretsiz
+  müşteri kazanım planı üretir
 - `çık` → programı kapatır
 
 ## Yeni ajan ekleme
