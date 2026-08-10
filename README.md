@@ -38,6 +38,9 @@ SHOPIFY_STORE_DOMAIN=<magaza-adin>.myshopify.com
 SHOPIFY_CLIENT_ID=<Shopify custom app Client ID>
 SHOPIFY_CLIENT_SECRET=<Shopify custom app Client Secret>
 OPENAI_API_KEY=<OpenAI API anahtarın>
+EBAY_CLIENT_ID=<eBay Production keyset App ID>
+EBAY_CLIENT_SECRET=<eBay Production keyset Cert ID>
+EBAY_REFRESH_TOKEN=<bir kerelik OAuth consent'ten alinan refresh token>
 ```
 
 Shopify tarafında bir **custom app** (Dev Dashboard üzerinden) oluşturup
@@ -46,6 +49,9 @@ read_fulfillments, write_fulfillments, read_customers` izinleriyle mağazana
 kurman gerekiyor — detaylar için [`CLAUDE.md`](./CLAUDE.md) → "Shopify
 integration" bölümüne bak. `OPENAI_API_KEY`, ürün görseli üretimi için
 platform.openai.com üzerinden alınır (Anthropic'ten ayrı bir hesap/anahtar).
+`EBAY_*` değerleri developer.ebay.com'da bir Production keyset ve bir kerelik
+OAuth consent ile alınır — adımlar için [`CLAUDE.md`](./CLAUDE.md) → "eBay
+integration" bölümüne bak.
 
 ## Komutlar (uygulama içi)
 
@@ -63,6 +69,26 @@ platform.openai.com üzerinden alınır (Anthropic'ten ayrı bir hesap/anahtar).
 - `pazarlama` → mağazadaki aktif ürünler için Marketing Agent'tan ücretsiz
   müşteri kazanım planı üretir
 - `çık` → programı kapatır
+
+## Canlı panel ve ürün onay kuyruğu
+
+Program başladığında `http://127.0.0.1:8765` adresinde otomatik bir panel
+açılır (URL konsola yazdırılır). Panel şunları gösterir:
+
+- Yüklü ajan sayısı, otomatik mod durumu, son kontrol zamanı
+- Canlı olay akışı (siparişler, ürün ekleme/hataları, pazarlama planları)
+- **Onay bekleyen yeni ürünler** — tedarikçiden (örn. DSers/AliExpress)
+  bulunan ürün adayları buraya düşer; her kartta gerçek maliyet/kâr marjı,
+  tüm ürün görselleri ve `PRODUCT_AGENT`'ın ürettiği nihai açıklama önceden
+  gösterilir (onay öncesi hiçbir içerik arka planda üretilmez). "Onayla ve
+  Yayınla" tek tıkla ürünü gerçek/aktif olarak Shopify'a ekler; "Reddet"
+  sadece kuyruktan kaldırır. Adaylar `pending_products.json`'da tutulur
+  (gitignored, çalışma zamanı verisi — `products.json`'dan farklı olarak
+  git'e commit edilmez).
+
+Bu kuyruğa ürün eklemek şu an elle yapılıyor (bir DSers arama sonucu
+`panel.add_pending_products()`'a verilir) — `main.py`'nin otomatik
+döngüsüne henüz bağlı bir tedarikçi keşif adımı yok.
 
 ## Yeni ajan ekleme
 
