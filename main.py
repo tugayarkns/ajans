@@ -7,8 +7,10 @@ from datetime import datetime
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+import inventory_db
 import panel
 import product_image
+from ebay_client import EbayClient
 from shopify_client import ShopifyClient
 
 PRODUCTS_FILE = "products.json"
@@ -190,20 +192,61 @@ Başla!
             # gercek siparis GECILMEZ. Siparis Shopify'da "ajans-islendi" olarak
             # etiketlendigi icin bir daha bu listede gorunmez; bu uyari olmazsa
             # odenmis bir siparis sessizce hic kargolanmadan kalabilir.
-            self._warn_supplier_order_required(order)
+            items = ", ".join(
+                f"{i['quantity']}x {i['title']}" for i in order.get("line_items", [])
+            )
+            self._warn_supplier_order_required(order.get("name"), items)
 
     @staticmethod
-    def _warn_supplier_order_required(order):
+    def _warn_supplier_order_required(order_ref, items):
         """Tedarikciye elle siparis gecilmesi gerektigini panele ve konsola bildirir."""
-        items = ", ".join(
-            f"{i['quantity']}x {i['title']}" for i in order.get("line_items", [])
-        )
         msg = (
-            f"⚠️ ELLE İŞLEM GEREKİYOR — {order.get('name')}: tedarikçiye "
+            f"⚠️ ELLE İŞLEM GEREKİYOR — {order_ref}: tedarikçiye "
             f"(DSers/AliExpress) sipariş geçilmeli. Ürünler: {items}"
         )
         panel.log_event("tedarikci", msg, "error")
         print(f"\n{msg}\n")
+
+    def check_ebay_orders(self):
+        """eBay'deki yeni siparisleri ayni ajan hattindan gecirir.
+
+        Tekrar isleme korumasi Shopify'daki gibi etiketle degil, yerel
+        veritabaniyla saglanir (eBay API'si siparise etiket eklemeye izin
+        vermiyor).
+        """
+        try:
+            ebay = EbayClient()
+        except KeyError as e:
+            print(f"❌ eBay ayarları eksik: {e} .env dosyasında tanımlı değil\n")
+            return
+
+        print("\n🔄 eBay'de yeni sipariş kontrol ediliyor...\n")
+        try:
+            orders = ebay.get_new_orders()
+        except Exception as e:
+            panel.log_event("ebay", f"Sipariş kontrolü başarısız: {e}", "error")
+            print(f"❌ eBay'e bağlanılamadı: {e}\n")
+            return
+
+        new_orders = [
+            o for o in orders if not inventory_db.is_order_processed(o.get("orderId"))
+        ]
+        if not new_orders:
+            print("📭 eBay'de işlenecek yeni sipariş yok\n")
+            return
+
+        print(f"📦 eBay'de {len(new_orders)} yeni sipariş bulundu\n")
+        panel.log_event("ebay", f"{len(new_orders)} yeni sipariş bulundu", "info")
+        for order in new_orders:
+            self.process_order(ebay.format_order_for_agent(order))
+            inventory_db.mark_order_processed(order.get("orderId"), channel="ebay")
+            items = ", ".join(
+                f"{i.get('quantity')}x {i.get('title')}"
+                for i in order.get("lineItems", [])
+            )
+            self._warn_supplier_order_required(
+                f"eBay {order.get('orderId')}", items
+            )
 
     def list_products(self):
         if "PRODUCT_AGENT" not in self.agents:
@@ -351,6 +394,13 @@ Başla!
                 except Exception as e:
                     panel.log_event("otomatik", f"Sipariş kontrolü hatası: {e}", "error")
                     print(f"❌ Sipariş kontrolü sırasında beklenmeyen hata: {e}\n")
+                try:
+                    self.check_ebay_orders()
+                except Exception as e:
+                    panel.log_event(
+                        "otomatik", f"eBay sipariş kontrolü hatası: {e}", "error"
+                    )
+                    print(f"❌ eBay sipariş kontrolü sırasında beklenmeyen hata: {e}\n")
                 print(f"😴 {interval_seconds} saniye bekleniyor...\n")
                 time.sleep(interval_seconds)
         except KeyboardInterrupt:
@@ -371,6 +421,7 @@ def main():
     print("  2. 'ajan ORDER_AGENT' şeklinde spesifik ajan çağır")
     print("  3. 'loglar' yazarak tüm siparişleri göster")
     print("  4. 'shopify' yazarak mağazadaki yeni siparişleri işle")
+    print("  4b. 'ebay' yazarak eBay'deki yeni siparişleri işle")
     print("  5. 'urunler' yazarak products.json'daki yeni ürünleri mağazaya ekle")
     print("  6. 'otomatik' yazarak sürekli çalışan modu başlat (Ctrl+C ile durdur)")
     print("  7. 'pazarlama' yazarak ücretsiz müşteri bulma planı üret")
@@ -392,6 +443,9 @@ def main():
 
             elif user_input.lower() == "shopify":
                 system.check_shopify_orders()
+
+            elif user_input.lower() == "ebay":
+                system.check_ebay_orders()
 
             elif user_input.lower() == "urunler":
                 system.list_products()

@@ -34,6 +34,45 @@ def init_db():
         )
 
 
+def init_orders_table():
+    """eBay siparisleri icin 'islendi' kaydi.
+
+    Shopify'da bu bilgi siparise `ajans-islendi` etiketi eklenerek tutuluyor,
+    ama eBay Fulfillment API'si siparise etiket eklemeye izin vermiyor. Bu
+    yuzden eBay tarafinda ayni tekrar-isleme korumasi yerelde saglanir.
+    """
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processed_orders (
+                order_id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL,
+                processed_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+def is_order_processed(order_id):
+    init_orders_table()
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM processed_orders WHERE order_id = ?", (order_id,)
+        ).fetchone()
+        return row is not None
+
+
+def mark_order_processed(order_id, channel="ebay"):
+    init_orders_table()
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO processed_orders (order_id, channel, processed_at) "
+            "VALUES (?, ?, ?)",
+            (order_id, channel, now),
+        )
+
+
 def upsert(sku, title, pool_qty, shopify_qty=None, ebay_qty=None):
     """Bir SKU'yu ekler/gunceller. Var olan alanlar verilmezse korunur."""
     with closing(_connect()) as conn, conn:

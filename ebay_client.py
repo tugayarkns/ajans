@@ -9,6 +9,7 @@ import urllib.request
 REQUEST_TIMEOUT_SECONDS = 30
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 API_BASE = "https://api.ebay.com/sell/inventory/v1"
+FULFILLMENT_API_BASE = "https://api.ebay.com/sell/fulfillment/v1"
 SCOPE = (
     "https://api.ebay.com/oauth/api_scope/sell.inventory "
     "https://api.ebay.com/oauth/api_scope/sell.account "
@@ -95,8 +96,8 @@ class EbayClient:
         self._token_expires_at = time.time() + payload.get("expires_in", 7200)
         return self._token
 
-    def _request(self, method, path, body=None):
-        url = f"{API_BASE}{path}"
+    def _request(self, method, path, body=None, base=API_BASE):
+        url = f"{base}{path}"
         headers = {
             "Authorization": f"Bearer {self._get_token()}",
             "Content-Type": "application/json",
@@ -218,3 +219,35 @@ class EbayClient:
             "quantity"
         ] = new_qty
         self._request("PUT", f"/inventory_item/{sku}", item)
+
+    def get_new_orders(self):
+        """Henuz kargolanmamis eBay siparislerini dondurur.
+
+        Shopify'in aksine eBay'de siparise etiket eklenemez, bu yuzden
+        "islendi" bilgisi yerelde tutulur (bkz. inventory_db.mark_order_processed).
+        """
+        query = (
+            "/order?filter=orderfulfillmentstatus:"
+            "%7BNOT_STARTED%7CIN_PROGRESS%7D&limit=50"
+        )
+        result = self._request("GET", query, base=FULFILLMENT_API_BASE)
+        return result.get("orders", [])
+
+    @staticmethod
+    def format_order_for_agent(order):
+        """eBay siparisini Master Agent'in bekledigi serbest metin formatina cevirir.
+
+        ShopifyClient.format_order_for_agent() ile ayni sozlesmeyi kullanir,
+        boylece iki kanalin siparisleri ayni ajan hattindan gecebilir.
+        """
+        buyer = order.get("buyer", {}).get("username") or "Bilinmeyen Musteri"
+        items = ", ".join(
+            f"{i.get('quantity')}x {i.get('title')}"
+            for i in order.get("lineItems", [])
+        ) or "urun yok"
+        total = order.get("pricingSummary", {}).get("total", {})
+        return (
+            f"Musteri {buyer}, {items}, "
+            f"Toplam {total.get('value')} {total.get('currency')} "
+            f"(eBay Siparis No: {order.get('orderId')})"
+        )

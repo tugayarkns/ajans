@@ -76,7 +76,7 @@ silently go unshipped. `_warn_supplier_order_required()` exists for exactly
 this: after each processed order it logs a red `tedarikci` event to the
 panel listing the line items that a human must order manually. Do not
 remove that warning without first making fulfilment genuinely automatic.
-eBay orders are not polled at all — only Shopify.
+The same warning fires for eBay orders (see below).
 
 ## Product image generation
 
@@ -183,6 +183,20 @@ most categories. EU GPSR rules are why `Hersteller` is now mandatory.
 Currently listed via the Inventory API on `EBAY_AT`: `AJANS-005`
 (307118017053), `AJANS-006` (307118047792), `AJANS-007` (307118048040),
 `AJANS-008` (307118048374).
+
+### eBay order polling
+
+`check_ebay_orders()` (menu command `ebay`, also part of `run_automatic()`)
+pulls unshipped orders from the Fulfillment API and pushes them through the
+same agent pipeline as Shopify orders — `EbayClient.format_order_for_agent()`
+deliberately emits the same free-text shape as its Shopify counterpart.
+
+Deduplication differs by necessity: Shopify orders get tagged
+`ajans-islendi` on the order itself, but the eBay API has no equivalent, so
+processed eBay order ids are recorded locally in `inventory_db`'s
+`processed_orders` table. That means **wiping `inventory.db` would cause
+already-handled eBay orders to be reprocessed**, whereas Shopify's tag
+survives independently of local state.
 
 The four products currently listed on eBay were created manually through
 the browser (Seller Hub UI), not through this client. Each now shares a
