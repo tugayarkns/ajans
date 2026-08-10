@@ -8,6 +8,7 @@ activity_log.jsonl dosyasina yazilir, boylece program yeniden
 baslatilinca gecmis kaybolmaz.
 """
 import json
+import re
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,10 +59,30 @@ def _save_pending():
 
 
 def add_pending_products(items):
-    """Onay bekleyen yeni urun adaylarini panele ekler (orn. DSers'tan gelen adaylar)."""
+    """Onay bekleyen yeni urun adaylarini panele ekler (orn. DSers'tan gelen adaylar).
+
+    Her aday, panele eklenmeden ONCE PRODUCT_AGENT'tan gecirilip nihai
+    baslik/aciklamasi uretilir (description_html eksikse). Boylece kullanici
+    panelde her zaman satisa hazir, son hali gordugu bir urunu onaylar —
+    onay sonrasi arka planda hicbir icerik uretimi/degisimi olmaz.
+    """
+    prepared = []
+    for item in items:
+        if not item.get("description_html"):
+            title, description_html, needs_review = _generate_listing(item)
+            item = {
+                **item,
+                "title": title,
+                "description_html": description_html,
+                "needs_review": needs_review,
+            }
+        if not item.get("image_urls") and item.get("image_url"):
+            item["image_urls"] = [item["image_url"]]
+        prepared.append(item)
     with _lock:
-        _pending.extend(items)
+        _pending.extend(prepared)
         _save_pending()
+    return prepared
 
 
 def get_pending_product(product_id):
@@ -182,15 +203,22 @@ _PAGE_HTML = """<!doctype html>
   .badge.info { color:var(--gray); background:rgba(139,144,160,0.12); }
   .badge.info::before { background:var(--gray); }
   .empty { padding:40px 20px; text-align:center; color:var(--muted); font-size:13px; }
-  .pending-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:14px; padding:20px; }
+  .pending-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:14px; padding:20px; }
   .pcard { background:#0f1118; border:1px solid var(--panel-border); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; }
-  .pcard img { width:100%; height:140px; object-fit:cover; background:#1a1c26; }
+  .pcard img { width:100%; height:160px; object-fit:cover; background:#1a1c26; }
+  .pcard .thumbs { display:flex; gap:4px; padding:6px 6px 0; }
+  .pcard .thumbs img { width:36px; height:36px; border-radius:6px; flex-shrink:0; cursor:pointer; border:1px solid var(--panel-border); }
+  .pcard .thumbs img.active { border-color:var(--accent); }
+  .pcard .thumbs .more { width:36px; height:36px; border-radius:6px; background:#1a1c26; display:flex; align-items:center; justify-content:center; font-size:10px; color:var(--muted); flex-shrink:0; }
   .pcard .body { padding:12px 14px 14px; display:flex; flex-direction:column; gap:6px; flex:1; }
-  .pcard .title { font-size:12.5px; line-height:1.35; font-weight:600; max-height:51px; overflow:hidden; }
+  .pcard .title { font-size:13px; line-height:1.35; font-weight:600; }
   .pcard .price { font-size:13px; color:var(--text); font-weight:700; }
   .pcard .cost { font-size:11px; color:var(--muted); }
   .pcard .margin { font-size:12px; font-weight:700; display:flex; align-items:center; gap:6px; margin-top:2px; }
   .pcard .margin .pct { font-size:11px; font-weight:600; padding:2px 7px; border-radius:999px; }
+  .pcard .desc { font-size:11.5px; line-height:1.5; color:var(--muted); background:#0b0d12; border:1px solid var(--panel-border); border-radius:8px; padding:8px 10px; max-height:70px; overflow:hidden; position:relative; }
+  .pcard .desc.expanded { max-height:none; }
+  .pcard .desc-toggle { font-size:11px; color:var(--accent); cursor:pointer; background:none; border:none; padding:2px 0; text-align:left; font-weight:600; }
   .pcard .actions { display:flex; gap:8px; margin-top:auto; padding-top:8px; }
   .pcard button { flex:1; border:none; border-radius:8px; padding:8px 0; font-size:12px; font-weight:600; cursor:pointer; }
   .btn-approve { background:var(--green); color:#0b0d12; }
@@ -282,10 +310,17 @@ async function refresh() {
       const profit = sell - totalCost;
       const marginPct = sell > 0 ? (profit / sell * 100) : 0;
       const marginColor = marginPct >= 40 ? 'var(--green)' : marginPct >= 20 ? 'var(--amber)' : 'var(--red)';
+      const images = (p.image_urls && p.image_urls.length) ? p.image_urls : (p.image_url ? [p.image_url] : []);
+      const descText = (p.description_html || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();
+      const cardId = 'p_' + escapeHtml(p.id);
+      const thumbs = images.slice(0, 6).map((url, i) => `<img src="${escapeHtml(url)}" class="${i===0?'active':''}" loading="lazy" onclick="document.getElementById('${cardId}_main').src=this.src; this.parentElement.querySelectorAll('img').forEach(im=>im.classList.remove('active')); this.classList.add('active');">`).join('');
+      const moreCount = images.length - 6;
       return `
       <div class="pcard" data-id="${escapeHtml(p.id)}">
-        <img src="${escapeHtml(p.image_url || '')}" alt="" loading="lazy">
+        <img id="${cardId}_main" src="${escapeHtml(images[0] || '')}" alt="" loading="lazy">
+        ${images.length > 1 ? `<div class="thumbs">${thumbs}${moreCount > 0 ? `<div class="more">+${moreCount}</div>` : ''}</div>` : ''}
         <div class="body">
+          ${p.needs_review ? '<div class="desc" style="color:var(--amber); border-color:var(--amber);">⚠️ PRODUCT_AGENT bu urunde bir sorun isaretledi (fiyat/aciklama eksik olabilir) — onaylamadan once dikkatlice kontrol edin.</div>' : ''}
           <div class="title">${escapeHtml(p.title)}</div>
           <div class="price">Satis: ${cur} ${sell.toFixed(2)}${p.sell_price_max && p.sell_price_max !== sell ? '–' + p.sell_price_max.toFixed(2) : ''}</div>
           <div class="cost">Maliyet (urun+kargo): ${cur} ${totalCost.toFixed(2)} (urun ${cur} ${(p.cost_min || 0).toFixed(2)} + kargo ${cur} ${shipping.toFixed(2)})</div>
@@ -293,6 +328,10 @@ async function refresh() {
             Kar: ${cur} ${profit.toFixed(2)}
             <span class="pct" style="background:color-mix(in srgb, ${marginColor} 15%, transparent); color:${marginColor}">%${marginPct.toFixed(0)}</span>
           </div>
+          ${descText ? `
+          <div class="desc" id="${cardId}_desc">${escapeHtml(descText)}</div>
+          <button class="desc-toggle" onclick="const d=document.getElementById('${cardId}_desc'); d.classList.toggle('expanded'); this.textContent = d.classList.contains('expanded') ? 'Daralt' : 'Tumunu gor';">Tumunu gor</button>
+          ` : '<div class="desc" style="color:var(--red)">Aciklama uretilememis — onaylamadan once kontrol edin.</div>'}
           <div class="actions">
             <button class="btn-approve" onclick="decide('${p.id}','approve',this)">Onayla ve Yayinla</button>
             <button class="btn-reject" onclick="decide('${p.id}','reject',this)">Reddet</button>
@@ -321,19 +360,104 @@ setInterval(refresh, 2000);
 """
 
 
+def parse_agent_listing(raw_text, fallback_title):
+    """PRODUCT_AGENT'in serbest metin ciktisindan MUSTERIYE GOSTERILECEK
+    baslik ve aciklamayi ayiklar.
+
+    Agent ciktisi "Başlık/Açıklama/Fiyat/Kâr Marjı/Durum" alanlarini bir arada
+    dondurur; Fiyat/Kâr Marjı/Durum sadece bizim ic degerlendirmemiz icindir
+    ve musteri sayfasina (Shopify body_html) asla yazilmamali — daha once bu
+    ayiklama yapilmadigi icin ic alanlar (ve onlarin Turkce etiketleri)
+    canli urun sayfasina siziyordu. (title, description_html, needs_review)
+    dondurur; needs_review, agent ciktisinda "⚠️" (KONTROL GEREKIYOR) varsa
+    True olur.
+    """
+    raw_text = (raw_text or "").strip().strip("`").strip()
+    if not raw_text:
+        return fallback_title, f"<p>{fallback_title}</p>", False
+
+    title = fallback_title
+    match = re.search(r"^Başlık:\s*(.+)$", raw_text, re.MULTILINE)
+    if match:
+        title = match.group(1).strip()
+
+    description = fallback_title
+    match = re.search(
+        r"^Açıklama:\s*(.+?)(?=\n(?:Fiyat|Kâr Marjı|Durum):|\Z)",
+        raw_text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match:
+        description = match.group(1).strip()
+
+    needs_review = "⚠️" in raw_text
+
+    return title, f"<p>{description}</p>", needs_review
+
+
+def _generate_listing(product):
+    """PRODUCT_AGENT'i cagirip satisa yonelik bir baslik/aciklama uretir.
+
+    main.py'nin list_products() akisiyla ayni girdi/cikti sozlesmesini kullanir,
+    boylece elle eklenen urunlerle DSers'tan onaylanan urunler ayni kalitede
+    baslik/aciklamaya sahip olur. (title, description_html, needs_review) dondurur.
+    """
+    fallback_title = product["title"]
+
+    try:
+        with open("agents/product_agent.md", encoding="utf-8") as f:
+            system_prompt = f.read()
+    except FileNotFoundError:
+        return fallback_title, f"<p>{fallback_title}</p>", False
+
+    from anthropic import Anthropic
+
+    raw_description = product.get("raw_description") or product.get("original_title") or product["title"]
+    task = (
+        f"Ürün Adı: {product['title']}\n"
+        "Hedef Pazar: global/EN\n"
+        f"Maliyet: {product.get('cost_min', '?')} {product.get('currency', 'EUR')}\n"
+        f"Satış Fiyatı: {product.get('sell_price_min', '?')} {product.get('currency', 'EUR')}\n"
+        f"Ham Açıklama: {raw_description} (tedarikçi: {product.get('source', 'DSers')}, "
+        f"kaynak: {product.get('supplier_url', '(yok)')})"
+    )
+    try:
+        response = Anthropic().messages.create(
+            model="claude-opus-5",
+            max_tokens=1500,
+            system=system_prompt,
+            messages=[{"role": "user", "content": task}],
+        )
+        result = next((b.text for b in response.content if b.type == "text"), "")
+    except Exception:
+        return fallback_title, f"<p>{fallback_title}</p>", False
+
+    return parse_agent_listing(result, fallback_title)
+
+
 def _publish_product(product):
     """Onaylanan bir aday urunu gercek Shopify magazasina, canli (active) olarak ekler."""
     from shopify_client import ShopifyClient
 
     shopify = ShopifyClient()
+    if product.get("description_html"):
+        title, description_html = product["title"], product["description_html"]
+    else:
+        title, description_html, _ = _generate_listing(product)
     created = shopify.create_product(
-        title=product["title"],
-        description_html=product.get("description_html")
-        or f"<p>{product['title']}</p>",
+        title=title,
+        description_html=description_html,
         price=product["sell_price_min"],
     )
-    if product.get("image_url"):
-        shopify.add_product_image_from_url(created["id"], product["image_url"])
+
+    image_urls = product.get("image_urls") or (
+        [product["image_url"]] if product.get("image_url") else []
+    )
+    for url in image_urls[:8]:
+        try:
+            shopify.add_product_image_from_url(created["id"], url)
+        except Exception:
+            continue
     return created
 
 

@@ -223,6 +223,7 @@ Başla!
         for item in new_items:
             task = (
                 f"Ürün Adı: {item['name']}\n"
+                "Hedef Pazar: global/EN\n"
                 f"Maliyet: {item.get('cost_price', '?')} TL\n"
                 f"Satış Fiyatı: {item.get('sell_price', '?')} TL\n"
                 f"Ham Açıklama: {item.get('description', '(yok)')}"
@@ -231,10 +232,19 @@ Başla!
             if not agent_output:
                 continue
 
+            _, description_html, needs_review = panel.parse_agent_listing(
+                agent_output, item["name"]
+            )
+            if needs_review:
+                print(
+                    f"⚠️ '{item['name']}' PRODUCT_AGENT tarafından kontrol gerektiriyor "
+                    "olarak işaretlendi (yine de ekleniyor, elle gözden geçirin)\n"
+                )
+
             try:
                 product = shopify.create_product(
                     title=item["name"],
-                    description_html=f"<p>{agent_output.replace(chr(10), '<br>')}</p>",
+                    description_html=description_html,
                     price=item.get("sell_price", 0),
                 )
                 print(f"✅ Shopify'a eklendi: {product.get('title')} (ID: {product.get('id')})\n")
