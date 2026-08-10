@@ -76,10 +76,15 @@ integration" bölümüne bak.
 ## ⚠️ Sipariş geldiğinde ne olur (önemli)
 
 Ajanlar siparişi analiz edip metin üretir, ama **tedarikçiye (DSers/AliExpress)
-gerçek sipariş geçmez** — kargo da göndermez. Bu yüzden her işlenen siparişten
-sonra panele kırmızı bir "ELLE İŞLEM GEREKİYOR" uyarısı düşer ve hangi
-üründen kaç adet sipariş etmeniz gerektiğini yazar. Satış geldiğinde
-tedarikçi siparişini elle geçmeniz gerekir.
+gerçek sipariş geçmez** — kargo da göndermez. Satış geldiğinde tedarikçi
+siparişini elle geçmeniz gerekir.
+
+Bunu kaçırmamanız için her sipariş, panelin en üstünde kırmızı
+**"Tedarikçiye Sipariş Verilmeli"** bölümünde açık bir görev olarak durur:
+hangi kanaldan, hangi sipariş, hangi üründen kaç adet. Siparişi verdikten
+sonra **"Sipariş verdim"** butonuna basınca listeden düşer (kayıt silinmez,
+geçmiş korunur). Olay akışındaki uyarı kaydırılınca kaybolabildiği için
+kalıcı takip buraya alınmıştır.
 
 ## Canlı panel ve ürün onay kuyruğu
 

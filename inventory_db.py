@@ -73,6 +73,62 @@ def mark_order_processed(order_id, channel="ebay"):
         )
 
 
+def init_supplier_tasks_table():
+    """Tedarikciye elle gecilmesi gereken siparislerin listesi.
+
+    Ajanlar tedarikciye siparis GECMEDIGI icin (bkz. CLAUDE.md "Shopify
+    integration"), her musteri siparisi burada acik bir gorev olarak durur ve
+    kullanici panelden "siparis verdim" diyene kadar kaybolmaz. Olay akisindaki
+    uyari kaydirilinca gozden kacabildigi icin kalici takip buraya alindi.
+    """
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS supplier_tasks (
+                order_ref TEXT PRIMARY KEY,
+                channel TEXT NOT NULL,
+                items TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                done_at TEXT
+            )
+            """
+        )
+
+
+def add_supplier_task(order_ref, channel, items):
+    init_supplier_tasks_table()
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO supplier_tasks "
+            "(order_ref, channel, items, created_at) VALUES (?, ?, ?, ?)",
+            (order_ref, channel, items, now),
+        )
+
+
+def get_open_supplier_tasks():
+    init_supplier_tasks_table()
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT * FROM supplier_tasks WHERE done_at IS NULL "
+            "ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def complete_supplier_task(order_ref):
+    """Gorevi tamamlandi olarak isaretler; kayit silinmez (gecmis korunur)."""
+    init_supplier_tasks_table()
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "UPDATE supplier_tasks SET done_at = ? WHERE order_ref = ? "
+            "AND done_at IS NULL",
+            (now, order_ref),
+        )
+        return cur.rowcount > 0
+
+
 def upsert(sku, title, pool_qty, shopify_qty=None, ebay_qty=None):
     """Bir SKU'yu ekler/gunceller. Var olan alanlar verilmezse korunur."""
     with closing(_connect()) as conn, conn:

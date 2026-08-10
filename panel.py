@@ -122,11 +122,19 @@ def set_state(**kwargs):
 
 def _snapshot():
     with _lock:
-        return {
+        snap = {
             "state": dict(_state),
             "events": list(reversed(_events)),
             "pending": list(_pending),
         }
+    # inventory_db kendi kilidini yonetir, _lock icinde cagirmaya gerek yok.
+    try:
+        import inventory_db
+
+        snap["supplier_tasks"] = inventory_db.get_open_supplier_tasks()
+    except Exception:
+        snap["supplier_tasks"] = []
+    return snap
 
 
 _PAGE_HTML = """<!doctype html>
@@ -242,6 +250,17 @@ _PAGE_HTML = """<!doctype html>
 
   <div class="cards" id="cards"></div>
 
+  <div class="panel-section" id="tasks-section" style="margin-bottom:28px; display:none; border-color:var(--red);">
+    <div class="head" style="background:rgba(248,113,113,0.08);">
+      <h2 style="color:var(--red);">⚠️ Tedarikciye Siparis Verilmeli</h2>
+      <span class="count" id="tasks-count"></span>
+    </div>
+    <table>
+      <thead><tr><th>Zaman</th><th>Kanal</th><th>Siparis</th><th>Urunler</th><th></th></tr></thead>
+      <tbody id="tasks-rows"></tbody>
+    </table>
+  </div>
+
   <div class="panel-section" style="margin-bottom:28px;">
     <div class="head">
       <h2>Onay Bekleyen Yeni Urunler</h2>
@@ -271,6 +290,24 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 let _lastPendingSig = null;
+async function completeTask(ref, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Kaydediliyor...';
+  try {
+    const res = await fetch('/api/supplier-task/done', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order_ref: ref })
+    });
+    if (!res.ok) throw new Error(await res.text());
+  } catch (err) {
+    alert('Islem basarisiz: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Siparis verdim';
+    return;
+  }
+  refresh();
+}
 async function decide(id, action, btn) {
   const card = btn.closest('.pcard');
   card.querySelectorAll('button').forEach(b => b.disabled = true);
@@ -301,6 +338,19 @@ async function refresh() {
       <div class="card"><div class="label">Son Kontrol</div><div class="value">${s.last_check ? timeAgo(s.last_check) : '—'}</div></div>
       <div class="card"><div class="label">Baslangic</div><div class="value">${new Date(s.started_at).toLocaleString('tr-TR')}</div></div>
     `;
+    const tasks = data.supplier_tasks || [];
+    document.getElementById('tasks-section').style.display = tasks.length ? '' : 'none';
+    document.getElementById('tasks-count').textContent = tasks.length ? `${tasks.length} bekleyen` : '';
+    document.getElementById('tasks-rows').innerHTML = tasks.map(t => `
+      <tr>
+        <td class="time">${timeAgo(t.created_at)}</td>
+        <td><span class="kind">${escapeHtml(t.channel)}</span></td>
+        <td>${escapeHtml(t.order_ref)}</td>
+        <td>${escapeHtml(t.items)}</td>
+        <td><button class="btn-approve" style="padding:6px 12px;" onclick="completeTask('${escapeHtml(t.order_ref)}', this)">Siparis verdim</button></td>
+      </tr>
+    `).join('');
+
     const pending = data.pending || [];
     document.getElementById('pending-count').textContent = pending.length ? `${pending.length} urun` : '';
     const pendingSig = pending.map(p => p.id).join(',');
@@ -480,6 +530,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, b"Not Found", "text/plain; charset=utf-8")
 
     def do_POST(self):
+        if self.path == "/api/supplier-task/done":
+            self._handle_supplier_task_done()
+            return
+
         if self.path not in ("/api/approve", "/api/reject"):
             self._send(404, b"Not Found", "text/plain; charset=utf-8")
             return
@@ -512,6 +566,28 @@ class _Handler(BaseHTTPRequestHandler):
 
         remove_pending_product(product_id)
         log_event("urun", f"'{product['title'][:60]}' onaylanip Shopify'a yayinlandi", "success")
+        self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
+
+    def _handle_supplier_task_done(self):
+        import inventory_db
+
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            order_ref = str(payload["order_ref"])
+        except (json.JSONDecodeError, KeyError, ValueError):
+            self._send(400, b"Gecersiz istek", "text/plain; charset=utf-8")
+            return
+
+        if not inventory_db.complete_supplier_task(order_ref):
+            self._send(
+                404,
+                b"Gorev bulunamadi (zaten tamamlanmis olabilir)",
+                "text/plain; charset=utf-8",
+            )
+            return
+
+        log_event("tedarikci", f"{order_ref}: tedarikçi siparişi verildi", "success")
         self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
 
     def _send(self, code, body, content_type):

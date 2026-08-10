@@ -198,8 +198,15 @@ Başla!
             self._warn_supplier_order_required(order.get("name"), items)
 
     @staticmethod
-    def _warn_supplier_order_required(order_ref, items):
-        """Tedarikciye elle siparis gecilmesi gerektigini panele ve konsola bildirir."""
+    def _warn_supplier_order_required(order_ref, items, channel="shopify"):
+        """Tedarikciye elle siparis gecilmesi gerektigini kalici gorev olarak kaydeder.
+
+        Sadece log_event yeterli degil: olay akisi kaydirildikca uyari gozden
+        kaybolur ve odenmis bir siparis hic kargolanmadan kalabilir. Bu yuzden
+        gorev veritabaninda acik kalir, panelde "Sipariş verdim" denene kadar
+        listede durur.
+        """
+        inventory_db.add_supplier_task(order_ref, channel, items)
         msg = (
             f"⚠️ ELLE İŞLEM GEREKİYOR — {order_ref}: tedarikçiye "
             f"(DSers/AliExpress) sipariş geçilmeli. Ürünler: {items}"
@@ -245,7 +252,7 @@ Başla!
                 for i in order.get("lineItems", [])
             )
             self._warn_supplier_order_required(
-                f"eBay {order.get('orderId')}", items
+                f"eBay {order.get('orderId')}", items, channel="ebay"
             )
 
     def list_products(self):

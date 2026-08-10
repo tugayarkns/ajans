@@ -73,10 +73,19 @@ text: no supplier order is placed with DSers/AliExpress, no shipping label
 is bought, no tracking number is real. Because the order is nevertheless
 tagged `ajans-islendi` and therefore never shown again, a paid order could
 silently go unshipped. `_warn_supplier_order_required()` exists for exactly
-this: after each processed order it logs a red `tedarikci` event to the
-panel listing the line items that a human must order manually. Do not
-remove that warning without first making fulfilment genuinely automatic.
-The same warning fires for eBay orders (see below).
+this: after each processed order it records a row in `inventory_db`'s
+`supplier_tasks` table and logs a red `tedarikci` event. The panel renders
+open tasks in a dedicated red section at the top with a "Sipariş verdim"
+button hitting `POST /api/supplier-task/done`; completed rows keep their
+`done_at` (nothing is deleted). A log line alone was not enough — the event
+feed scrolls, and a missed line means an unshipped paid order. Do not
+remove this without first making fulfilment genuinely automatic. The same
+applies to eBay orders (see below).
+
+Automatic supplier ordering is **not currently possible**: the DSers MCP
+surface is catalog-only (find / import / preview / push / remap supplier /
+inventory policy) and exposes no order-placement endpoint, so nothing in
+this codebase can place the AliExpress order on the merchant's behalf.
 
 ## Product image generation
 
