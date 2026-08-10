@@ -7,11 +7,13 @@ otomatik yenilenen bir sayfada gosterir. Olaylar ayni zamanda
 activity_log.jsonl dosyasina yazilir, boylece program yeniden
 baslatilinca gecmis kaybolmaz.
 """
+import hmac
 import json
 import os
 import re
 import threading
 import time
+import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -22,6 +24,7 @@ PENDING_FILE = "pending_products.json"
 MAX_EVENTS = 500
 ANALYTICS_REFRESH_SECONDS = 600
 ANALYTICS_WINDOW_DAYS = 7
+MAX_DISCOVERY_ITEMS_PER_REQUEST = 20
 
 # eBay Inventory API uzerinden yayinlanan SKU -> listingId eslemesi (bkz.
 # CLAUDE.md eBay bolumu). AJANS-001..004 Seller Hub UI'dan elle yayinlandigi
@@ -86,6 +89,8 @@ def add_pending_products(items):
     """
     prepared = []
     for item in items:
+        if not item.get("id"):
+            item = {**item, "id": uuid.uuid4().hex}
         if not item.get("description_html"):
             title, description_html, needs_review = _generate_listing(item)
             item = {
@@ -412,6 +417,7 @@ _PAGE_HTML = """<!doctype html>
   .pcard .thumbs img.active { border-color:var(--accent); }
   .pcard .thumbs .more { width:36px; height:36px; border-radius:6px; background:#1a1c26; display:flex; align-items:center; justify-content:center; font-size:10px; color:var(--muted); flex-shrink:0; }
   .pcard .body { padding:12px 14px 14px; display:flex; flex-direction:column; gap:6px; flex:1; }
+  .score-badge { align-self:flex-start; font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; }
   .pcard .title { font-size:13px; line-height:1.35; font-weight:600; }
   .pcard .price { font-size:13px; color:var(--text); font-weight:700; }
   .pcard .cost { font-size:11px; color:var(--muted); }
@@ -637,7 +643,7 @@ async function refresh() {
       </tr>
     `).join('');
 
-    const pending = data.pending || [];
+    const pending = (data.pending || []).slice().sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
     document.getElementById('pending-count').textContent = pending.length ? `${pending.length} urun` : '';
     const pendingSig = pending.map(p => p.id).join(',');
     if (pendingSig !== _lastPendingSig) {
@@ -655,11 +661,14 @@ async function refresh() {
       const cardId = 'p_' + String(p.id).replace(/[^a-zA-Z0-9_-]/g, '_');
       const thumbs = images.slice(0, 6).map((url, i) => `<img src="${escapeHtml(url)}" referrerpolicy="no-referrer" class="${i===0?'active':''}" onclick="document.getElementById('${cardId}_main').src=this.src; this.parentElement.querySelectorAll('img').forEach(im=>im.classList.remove('active')); this.classList.add('active');">`).join('');
       const moreCount = images.length - 6;
+      const hasScore = p.score !== undefined && p.score !== null;
+      const scoreColor = !hasScore ? 'var(--muted)' : p.score >= 80 ? 'var(--green)' : p.score >= 50 ? 'var(--amber)' : 'var(--red)';
       return `
       <div class="pcard" data-id="${escapeHtml(p.id)}">
         <img id="${cardId}_main" src="${escapeHtml(images[0] || '')}" referrerpolicy="no-referrer" alt="">
         ${images.length > 1 ? `<div class="thumbs">${thumbs}${moreCount > 0 ? `<div class="more">+${moreCount}</div>` : ''}</div>` : ''}
         <div class="body">
+          ${hasScore ? `<div class="score-badge" style="background:color-mix(in srgb, ${scoreColor} 15%, transparent); color:${scoreColor}" title="${escapeHtml(p.score_reason || '')}">Guven skoru: ${p.score}/100</div>` : ''}
           ${p.needs_review ? '<div class="desc" style="color:var(--amber); border-color:var(--amber);">⚠️ PRODUCT_AGENT bu urunde bir sorun isaretledi (fiyat/aciklama eksik olabilir) — onaylamadan once dikkatlice kontrol edin.</div>' : ''}
           <div class="title">${escapeHtml(p.title)}</div>
           <div class="price">Satis: ${cur} ${sell.toFixed(2)}${p.sell_price_max && p.sell_price_max !== sell ? '–' + p.sell_price_max.toFixed(2) : ''}</div>
@@ -864,6 +873,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if self.path == "/api/discovery/submit":
+            self._handle_discovery_submit()
+            return
+
         if not self._current_user():
             self._send(401, b'{"error":"giris gerekli"}', "application/json; charset=utf-8")
             return
@@ -915,6 +928,41 @@ class _Handler(BaseHTTPRequestHandler):
         remove_pending_product(product_id)
         log_event("urun", f"'{product['title'][:60]}' onaylanip Shopify'a yayinlandi", "success")
         self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
+
+    def _handle_discovery_submit(self):
+        """Zamanlanmis kesif ajaninin bulduglari urun adaylarini kuyruga ekler.
+
+        Tarayici oturum cerezinden BAGIMSIZ, paylasilan bir Bearer token ile
+        korunur (bkz. panel_auth ve DISCOVERY_API_TOKEN) - cagiran taraf bir
+        bulut ajani/cron job oldugu icin cerez tabanli girisi kullanamaz.
+        """
+        expected_token = os.environ.get("DISCOVERY_API_TOKEN")
+        auth_header = self.headers.get("Authorization") or ""
+        provided_token = auth_header.removeprefix("Bearer ").strip()
+        if not expected_token or not hmac.compare_digest(provided_token, expected_token):
+            self._send(401, b'{"error":"gecersiz token"}', "application/json; charset=utf-8")
+            return
+
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            items = payload["items"]
+            if not isinstance(items, list) or not items:
+                raise ValueError
+        except (json.JSONDecodeError, KeyError, ValueError):
+            self._send(400, b'{"error":"gecersiz istek"}', "text/plain; charset=utf-8")
+            return
+
+        items = items[:MAX_DISCOVERY_ITEMS_PER_REQUEST]
+        try:
+            prepared = add_pending_products(items)
+        except Exception as e:
+            self._send(500, str(e).encode("utf-8", errors="replace"), "text/plain; charset=utf-8")
+            return
+
+        log_event("kesif", f"{len(prepared)} yeni urun adayi eklendi", "success")
+        body = json.dumps({"ok": True, "added": len(prepared)}, ensure_ascii=False).encode("utf-8")
+        self._send(200, body, "application/json; charset=utf-8")
 
     def _handle_login(self):
         length = int(self.headers.get("Content-Length", 0))

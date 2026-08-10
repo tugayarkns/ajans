@@ -41,6 +41,7 @@ OPENAI_API_KEY=<OpenAI API anahtarın>
 EBAY_CLIENT_ID=<eBay Production keyset App ID>
 EBAY_CLIENT_SECRET=<eBay Production keyset Cert ID>
 EBAY_REFRESH_TOKEN=<bir kerelik OAuth consent'ten alinan refresh token>
+DISCOVERY_API_TOKEN=<panelin /api/discovery/submit ucuna ozel, kendin uretecegin gizli anahtar>
 ```
 
 Shopify tarafında bir **custom app** (Dev Dashboard üzerinden) oluşturup
@@ -96,15 +97,28 @@ açılır (URL konsola yazdırılır). Panel şunları gösterir:
 - **Onay bekleyen yeni ürünler** — tedarikçiden (örn. DSers/AliExpress)
   bulunan ürün adayları buraya düşer; her kartta gerçek maliyet/kâr marjı,
   tüm ürün görselleri ve `PRODUCT_AGENT`'ın ürettiği nihai açıklama önceden
-  gösterilir (onay öncesi hiçbir içerik arka planda üretilmez). "Onayla ve
-  Yayınla" tek tıkla ürünü gerçek/aktif olarak Shopify'a ekler; "Reddet"
+  gösterilir (onay öncesi hiçbir içerik arka planda üretilmez). Adayın bir
+  `score` (0-100 güven skoru) alanı varsa kart üstünde rozet olarak gösterilir
+  ve liste skora göre büyükten küçüğe sıralanır — ürünü değerlendirmeye
+  vaktin yoksa "80+ olanı onayla" gibi basit bir kural izlenebilir. "Onayla
+  ve Yayınla" tek tıkla ürünü gerçek/aktif olarak Shopify'a ekler; "Reddet"
   sadece kuyruktan kaldırır. Adaylar `pending_products.json`'da tutulur
   (gitignored, çalışma zamanı verisi — `products.json`'dan farklı olarak
   git'e commit edilmez).
 
-Bu kuyruğa ürün eklemek şu an elle yapılıyor (bir DSers arama sonucu
-`panel.add_pending_products()`'a verilir) — `main.py`'nin otomatik
-döngüsüne henüz bağlı bir tedarikçi keşif adımı yok.
+Bu kuyruğa ürün eklemenin iki yolu var:
+1. Elle: bir DSers arama sonucu `panel.add_pending_products()`'a verilir.
+2. Dıştan HTTP ile: `POST /api/discovery/submit` — `Authorization: Bearer
+   <DISCOVERY_API_TOKEN>` ile korunur (tarayıcı girişinden bağımsız, sunucudan
+   -sunucuya bir paylaşımlı anahtar), gövdede `{"items": [...]}` beklenir. Bu,
+   `main.py`'nin kendi Python sürecinin erişemediği DSers MCP araçlarını
+   kullanan **ayrı bir zamanlanmış ajanın** (ör. günde 1 kez çalışan bir
+   bulut ajanı) bulduğu adayları panele göndermesi için var — panel'in
+   kendisi hâlâ hiçbir dış kaynağı kendiliğinden taramıyor, sadece bu uca
+   gelen POST isteklerini kabul ediyor. Bu ajanı bir yerde çalıştırmak için
+   panelin dışarıdan (örn. bir tünel ile) erişilebilir olması gerekir; makine
+   kapalıyken/`python main.py` çalışmıyorken o günkü tarama isteği panele
+   ulaşamaz.
 
 ## Yeni ajan ekleme
 

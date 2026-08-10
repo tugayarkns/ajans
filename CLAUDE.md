@@ -225,10 +225,9 @@ pool_qty, shopify_qty, ebay_qty, updated_at)`. `upsert()` preserves
 whichever channel quantity isn't passed in, so a Shopify-only or eBay-only
 update doesn't clobber the other channel's last known value. Depends on
 `ShopifyClient.get_product_quantity(sku)` / `EbayClient.get_listing_quantity(sku)`
-existing and on both channels' listings sharing the same SKU — not yet
-wired into `main.py`'s `run_automatic()` loop (planned as a third step
-alongside `list_products()` / `check_shopify_orders()`; the eBay side is
-now live, this wiring just hasn't been done yet).
+existing and on both channels' listings sharing the same SKU. Wired into
+`main.py`'s `run_automatic()` loop via `MultiAgentSystem.sync_inventory()`
+(also reachable manually with the `stok` menu command).
 
 ## Live panel
 
@@ -242,3 +241,30 @@ report through `panel.log_event(kind, message, status)` and
 `panel.set_state(**kwargs)`. Events are also appended to
 `activity_log.jsonl` (gitignored) so history survives a restart — loaded
 back in on `panel.start()`.
+
+Since `start()` now binds `0.0.0.0` by default (so the panel is reachable
+from other devices, e.g. through a tunnel — see below), every page and
+`/api/*` route except `/login` requires a session cookie issued by
+`panel_auth.py` (PBKDF2-hashed admin accounts stored in `panel_admins.json`,
+gitignored; HMAC-signed session tokens). Manage admins from the `main.py`
+menu: `admin-ekle` / `admin-liste` / `admin-sil`.
+
+### Proactive product discovery (`/api/discovery/submit`)
+
+Nothing in this codebase can call DSers MCP tools itself — that surface is
+only reachable from a Claude Code session, not from `main.py`'s own
+Anthropic-Messages-API agent pipeline (see "Automatic supplier ordering" above).
+So proactive "find new products" scanning has to live in a *separate*
+scheduled agent (e.g. a daily cloud routine with DSers MCP access) that POSTs
+its finds to this panel. `POST /api/discovery/submit` accepts
+`{"items": [...]}` (same shape `panel.add_pending_products()` expects, plus
+optional `score` 0-100 and `score_reason`), authenticated via
+`Authorization: Bearer <DISCOVERY_API_TOKEN>` (a `.env` secret, deliberately
+separate from the cookie-based admin login since the caller is a bot, not a
+browser). Items missing `id` get one generated (`uuid.uuid4().hex`). Accepted
+items land in the same pending-approval queue the UI already renders, sorted
+by `score` descending, with a colored score badge — nothing is ever
+auto-published, every candidate still needs a human "Onayla ve Yayınla"
+click. For this to work at all, the machine running `python main.py` must be
+on and network-reachable from wherever the scheduled agent runs (e.g. via a
+Cloudflare Tunnel) — there is no server-side deployment of this app.
