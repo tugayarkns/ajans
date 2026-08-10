@@ -186,6 +186,25 @@ Başla!
                 panel.log_event("shopify", msg, "error")
                 print(f"⚠️ Sipariş {order.get('name')} işlendi ama Shopify'da işaretlenemedi: {e}\n")
 
+            # KRITIK: Ajanlar sadece metin uretir — tedarikciye (DSers/AliExpress)
+            # gercek siparis GECILMEZ. Siparis Shopify'da "ajans-islendi" olarak
+            # etiketlendigi icin bir daha bu listede gorunmez; bu uyari olmazsa
+            # odenmis bir siparis sessizce hic kargolanmadan kalabilir.
+            self._warn_supplier_order_required(order)
+
+    @staticmethod
+    def _warn_supplier_order_required(order):
+        """Tedarikciye elle siparis gecilmesi gerektigini panele ve konsola bildirir."""
+        items = ", ".join(
+            f"{i['quantity']}x {i['title']}" for i in order.get("line_items", [])
+        )
+        msg = (
+            f"⚠️ ELLE İŞLEM GEREKİYOR — {order.get('name')}: tedarikçiye "
+            f"(DSers/AliExpress) sipariş geçilmeli. Ürünler: {items}"
+        )
+        panel.log_event("tedarikci", msg, "error")
+        print(f"\n{msg}\n")
+
     def list_products(self):
         if "PRODUCT_AGENT" not in self.agents:
             print("❌ Product Agent bulunamadı!\n")

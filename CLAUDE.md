@@ -68,6 +68,16 @@ through the normal agent pipeline, then tags the order `ajans-islendi` in
 Shopify so it isn't reprocessed. There is no webhook listener — this is
 pull-based polling.
 
+**The pipeline does not actually fulfil anything.** The agents only produce
+text: no supplier order is placed with DSers/AliExpress, no shipping label
+is bought, no tracking number is real. Because the order is nevertheless
+tagged `ajans-islendi` and therefore never shown again, a paid order could
+silently go unshipped. `_warn_supplier_order_required()` exists for exactly
+this: after each processed order it logs a red `tedarikci` event to the
+panel listing the line items that a human must order manually. Do not
+remove that warning without first making fulfilment genuinely automatic.
+eBay orders are not polled at all — only Shopify.
+
 ## Product image generation
 
 `product_image.py` calls OpenAI's `gpt-image-2` model (`client.images.generate`,
