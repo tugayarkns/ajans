@@ -82,6 +82,46 @@ listed without a photo if this step fails.
 than exiting the process. This is an in-process polling loop, not a
 scheduled task — the terminal must stay open for it to keep running.
 
+## eBay integration (in progress)
+
+`ebay_client.py` (`EbayClient`) mirrors `shopify_client.py`'s pattern but
+targets eBay's Sell API (Inventory + Offer), which — unlike Shopify's
+app-only `client_credentials` grant — acts on the seller's behalf and
+requires an `authorization_code`-derived refresh token. **Not yet
+functional**: requires `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`,
+`EBAY_REFRESH_TOKEN` in `.env`, obtained by creating a Production app at
+developer.ebay.com and completing a one-time OAuth consent — this is a
+manual, user-driven step, not something the app does itself. Once those
+credentials exist, `create_or_update_listing()` publishes a listing via the
+Inventory API + Offer API (`listingPolicies` require pre-existing eBay
+Business Policies — fulfillment/payment/return — and a merchant location
+key, set up in Seller Hub, not created by this client). `get_listing_quantity()`
+/ `update_quantity()` read/write stock for a given SKU, feeding
+`inventory_db.py`'s sync.
+
+The four products currently listed on eBay were created manually through
+the browser (Seller Hub UI), not through this client. Each now shares a
+canonical SKU (`AJANS-001`..`AJANS-004`) with one Shopify variant — set on
+both sides (eBay "Custom label" field, Shopify variant SKU via
+`update_variant_sku()`) and seeded into `inventory_db.py`. Note the pool/eBay
+quantities (10/8/5/15) intentionally differ from the larger Shopify variant
+quantities (54/68/33/65) — the eBay listings were published with smaller,
+deliberately chosen sell-through quantities, not the full Shopify stock.
+
+## Stock sync (`inventory_db.py`)
+
+Stdlib-only (`sqlite3`, no new dependency) local database tracking a single
+"pool" quantity per SKU across Shopify and eBay, since neither platform
+knows about the other's stock. Schema: `inventory(sku PRIMARY KEY, title,
+pool_qty, shopify_qty, ebay_qty, updated_at)`. `upsert()` preserves
+whichever channel quantity isn't passed in, so a Shopify-only or eBay-only
+update doesn't clobber the other channel's last known value. Depends on
+`ShopifyClient.get_product_quantity(sku)` / `EbayClient.get_listing_quantity(sku)`
+existing and on both channels' listings sharing the same SKU — not yet
+wired into `main.py`'s `run_automatic()` loop (planned as a third step
+alongside `list_products()` / `check_shopify_orders()` once the eBay side
+is live).
+
 ## Live panel
 
 `panel.py` starts a stdlib-only (`http.server`, no new dependency) HTTP

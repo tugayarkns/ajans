@@ -95,12 +95,33 @@ class ShopifyClient:
         for p in result.get("products", []):
             variants = p.get("variants", [])
             prices = [float(v["price"]) for v in variants if v.get("price")]
+            quantities = [
+                v["inventory_quantity"] for v in variants
+                if v.get("inventory_quantity") is not None
+            ]
             products.append({
                 "title": p["title"],
                 "price_min": min(prices) if prices else None,
                 "price_max": max(prices) if prices else None,
+                "inventory_quantity": sum(quantities) if quantities else None,
             })
         return products
+
+    def update_variant_sku(self, variant_id, sku):
+        """Bir variant'in SKU alanini gunceller (capraz-kanal stok eslestirmesi icin)."""
+        body = {"variant": {"id": variant_id, "sku": sku}}
+        self._request("PUT", f"/variants/{variant_id}.json", body)
+
+    def get_product_quantity(self, sku):
+        """Belirli bir SKU'yu tasiyan variant'in stok miktarini dondurur (yoksa None)."""
+        result = self._request(
+            "GET", "/products.json?status=active&limit=250&fields=variants"
+        )
+        for p in result.get("products", []):
+            for v in p.get("variants", []):
+                if v.get("sku") == sku:
+                    return v.get("inventory_quantity")
+        return None
 
     def create_product(self, title, description_html, price):
         body = {
