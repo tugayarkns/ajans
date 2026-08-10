@@ -145,6 +145,12 @@ class ShopifyClient:
         result = self._request("POST", f"/products/{product_id}/images.json", body)
         return result.get("image")
 
+    def add_product_image_from_url(self, product_id, image_url):
+        """Bir gorseli, Shopify'in kendisinin indirmesi icin dogrudan URL vererek ekler."""
+        body = {"image": {"src": image_url}}
+        result = self._request("POST", f"/products/{product_id}/images.json", body)
+        return result.get("image")
+
     @staticmethod
     def format_order_for_agent(order):
         """Shopify siparisini Master Agent'in bekledigi serbest metin formatina cevirir."""

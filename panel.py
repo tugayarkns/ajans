@@ -13,10 +13,12 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG_FILE = "activity_log.jsonl"
+PENDING_FILE = "pending_products.json"
 MAX_EVENTS = 500
 
 _lock = threading.Lock()
 _events = []
+_pending = []
 _state = {
     "agents_loaded": 0,
     "automatic_mode": False,
@@ -40,6 +42,37 @@ def _load_existing():
             _events.append(json.loads(line))
         except json.JSONDecodeError:
             continue
+
+
+def _load_pending():
+    try:
+        with open(PENDING_FILE, encoding="utf-8") as f:
+            _pending.extend(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+
+
+def _save_pending():
+    with open(PENDING_FILE, "w", encoding="utf-8") as f:
+        json.dump(_pending, f, ensure_ascii=False, indent=2)
+
+
+def add_pending_products(items):
+    """Onay bekleyen yeni urun adaylarini panele ekler (orn. DSers'tan gelen adaylar)."""
+    with _lock:
+        _pending.extend(items)
+        _save_pending()
+
+
+def get_pending_product(product_id):
+    with _lock:
+        return next((p for p in _pending if p["id"] == product_id), None)
+
+
+def remove_pending_product(product_id):
+    with _lock:
+        _pending[:] = [p for p in _pending if p["id"] != product_id]
+        _save_pending()
 
 
 def log_event(kind, message, status="info"):
@@ -68,7 +101,11 @@ def set_state(**kwargs):
 
 def _snapshot():
     with _lock:
-        return {"state": dict(_state), "events": list(reversed(_events))}
+        return {
+            "state": dict(_state),
+            "events": list(reversed(_events)),
+            "pending": list(_pending),
+        }
 
 
 _PAGE_HTML = """<!doctype html>
@@ -88,6 +125,7 @@ _PAGE_HTML = """<!doctype html>
     --green: #34d399;
     --red: #f87171;
     --gray: #8b90a0;
+    --amber: #f5a623;
   }
   * { box-sizing: border-box; }
   body {
@@ -144,6 +182,22 @@ _PAGE_HTML = """<!doctype html>
   .badge.info { color:var(--gray); background:rgba(139,144,160,0.12); }
   .badge.info::before { background:var(--gray); }
   .empty { padding:40px 20px; text-align:center; color:var(--muted); font-size:13px; }
+  .pending-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:14px; padding:20px; }
+  .pcard { background:#0f1118; border:1px solid var(--panel-border); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; }
+  .pcard img { width:100%; height:140px; object-fit:cover; background:#1a1c26; }
+  .pcard .body { padding:12px 14px 14px; display:flex; flex-direction:column; gap:6px; flex:1; }
+  .pcard .title { font-size:12.5px; line-height:1.35; font-weight:600; max-height:51px; overflow:hidden; }
+  .pcard .price { font-size:13px; color:var(--text); font-weight:700; }
+  .pcard .cost { font-size:11px; color:var(--muted); }
+  .pcard .margin { font-size:12px; font-weight:700; display:flex; align-items:center; gap:6px; margin-top:2px; }
+  .pcard .margin .pct { font-size:11px; font-weight:600; padding:2px 7px; border-radius:999px; }
+  .pcard .actions { display:flex; gap:8px; margin-top:auto; padding-top:8px; }
+  .pcard button { flex:1; border:none; border-radius:8px; padding:8px 0; font-size:12px; font-weight:600; cursor:pointer; }
+  .btn-approve { background:var(--green); color:#0b0d12; }
+  .btn-approve:hover { filter:brightness(1.08); }
+  .btn-reject { background:rgba(248,113,113,0.12); color:var(--red); }
+  .btn-reject:hover { background:rgba(248,113,113,0.2); }
+  .pcard button:disabled { opacity:.5; cursor:not-allowed; }
 </style>
 </head>
 <body>
@@ -159,6 +213,14 @@ _PAGE_HTML = """<!doctype html>
   </div>
 
   <div class="cards" id="cards"></div>
+
+  <div class="panel-section" style="margin-bottom:28px;">
+    <div class="head">
+      <h2>Onay Bekleyen Yeni Urunler</h2>
+      <span class="count" id="pending-count"></span>
+    </div>
+    <div class="pending-grid" id="pending-grid"></div>
+  </div>
 
   <div class="panel-section">
     <div class="head">
@@ -180,6 +242,25 @@ function escapeHtml(str) {
   div.textContent = String(str);
   return div.innerHTML;
 }
+async function decide(id, action, btn) {
+  const card = btn.closest('.pcard');
+  card.querySelectorAll('button').forEach(b => b.disabled = true);
+  btn.textContent = action === 'approve' ? 'Yayinlaniyor...' : 'Kaldiriliyor...';
+  try {
+    const res = await fetch('/api/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (!res.ok) throw new Error(await res.text());
+  } catch (err) {
+    alert('Islem basarisiz: ' + err.message);
+    card.querySelectorAll('button').forEach(b => b.disabled = false);
+    btn.textContent = action === 'approve' ? 'Onayla ve Yayinla' : 'Reddet';
+    return;
+  }
+  refresh();
+}
 async function refresh() {
   try {
     const res = await fetch('/api/data');
@@ -191,6 +272,35 @@ async function refresh() {
       <div class="card"><div class="label">Son Kontrol</div><div class="value">${s.last_check ? timeAgo(s.last_check) : '—'}</div></div>
       <div class="card"><div class="label">Baslangic</div><div class="value">${new Date(s.started_at).toLocaleString('tr-TR')}</div></div>
     `;
+    const pending = data.pending || [];
+    document.getElementById('pending-count').textContent = pending.length ? `${pending.length} urun` : '';
+    document.getElementById('pending-grid').innerHTML = pending.length ? pending.map(p => {
+      const cur = p.currency || 'EUR';
+      const shipping = p.shipping_cost || 0;
+      const totalCost = (p.cost_min || 0) + shipping;
+      const sell = p.sell_price_min || 0;
+      const profit = sell - totalCost;
+      const marginPct = sell > 0 ? (profit / sell * 100) : 0;
+      const marginColor = marginPct >= 40 ? 'var(--green)' : marginPct >= 20 ? 'var(--amber)' : 'var(--red)';
+      return `
+      <div class="pcard" data-id="${escapeHtml(p.id)}">
+        <img src="${escapeHtml(p.image_url || '')}" alt="" loading="lazy">
+        <div class="body">
+          <div class="title">${escapeHtml(p.title)}</div>
+          <div class="price">Satis: ${cur} ${sell.toFixed(2)}${p.sell_price_max && p.sell_price_max !== sell ? '–' + p.sell_price_max.toFixed(2) : ''}</div>
+          <div class="cost">Maliyet (urun+kargo): ${cur} ${totalCost.toFixed(2)} (urun ${cur} ${(p.cost_min || 0).toFixed(2)} + kargo ${cur} ${shipping.toFixed(2)})</div>
+          <div class="margin" style="color:${marginColor}">
+            Kar: ${cur} ${profit.toFixed(2)}
+            <span class="pct" style="background:color-mix(in srgb, ${marginColor} 15%, transparent); color:${marginColor}">%${marginPct.toFixed(0)}</span>
+          </div>
+          <div class="actions">
+            <button class="btn-approve" onclick="decide('${p.id}','approve',this)">Onayla ve Yayinla</button>
+            <button class="btn-reject" onclick="decide('${p.id}','reject',this)">Reddet</button>
+          </div>
+        </div>
+      </div>
+    `;
+    }).join('') : '<div class="empty" style="grid-column:1/-1;">Onay bekleyen urun yok.</div>';
     const countEl = document.getElementById('event-count');
     countEl.textContent = data.events.length ? `${data.events.length} olay` : '';
     document.getElementById('rows').innerHTML = data.events.length ? data.events.map(e => `
@@ -211,6 +321,22 @@ setInterval(refresh, 2000);
 """
 
 
+def _publish_product(product):
+    """Onaylanan bir aday urunu gercek Shopify magazasina, canli (active) olarak ekler."""
+    from shopify_client import ShopifyClient
+
+    shopify = ShopifyClient()
+    created = shopify.create_product(
+        title=product["title"],
+        description_html=product.get("description_html")
+        or f"<p>{product['title']}</p>",
+        price=product["sell_price_min"],
+    )
+    if product.get("image_url"):
+        shopify.add_product_image_from_url(created["id"], product["image_url"])
+    return created
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -224,6 +350,41 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, b"Not Found", "text/plain; charset=utf-8")
 
+    def do_POST(self):
+        if self.path not in ("/api/approve", "/api/reject"):
+            self._send(404, b"Not Found", "text/plain; charset=utf-8")
+            return
+
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            product_id = str(payload["id"])
+        except (json.JSONDecodeError, KeyError, ValueError):
+            self._send(400, b"Gecersiz istek", "text/plain; charset=utf-8")
+            return
+
+        product = get_pending_product(product_id)
+        if not product:
+            self._send(404, b"Urun bulunamadi (zaten islenmis olabilir)", "text/plain; charset=utf-8")
+            return
+
+        if self.path == "/api/reject":
+            remove_pending_product(product_id)
+            log_event("urun", f"'{product['title'][:60]}' reddedildi", "info")
+            self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
+            return
+
+        try:
+            _publish_product(product)
+        except Exception as e:
+            log_event("urun", f"'{product['title'][:60]}' yayinlanamadi: {e}", "error")
+            self._send(500, str(e).encode("utf-8", errors="replace"), "text/plain; charset=utf-8")
+            return
+
+        remove_pending_product(product_id)
+        log_event("urun", f"'{product['title'][:60]}' onaylanip Shopify'a yayinlandi", "success")
+        self._send(200, b'{"ok":true}', "application/json; charset=utf-8")
+
     def _send(self, code, body, content_type):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
@@ -236,7 +397,9 @@ def start(port=8765):
     """Paneli arka plan thread'inde baslatir, URL'ini dondurur."""
     global _server
     _load_existing()
+    _load_pending()
     _server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+    _server.daemon_threads = True
     thread = threading.Thread(target=_server.serve_forever, daemon=True)
     thread.start()
     return f"http://127.0.0.1:{port}"
