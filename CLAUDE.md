@@ -21,8 +21,8 @@ Requires in `.env` (loaded via `python-dotenv`):
 - `SHOPIFY_STORE_DOMAIN` (e.g. `norvexget.myshopify.com`)
 - `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET` (custom app credentials, see below)
 - `OPENAI_API_KEY` (product model-photo generation, see below)
-- `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` / `EBAY_REFRESH_TOKEN` (see eBay
-  integration section below)
+- `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` / `EBAY_REFRESH_TOKEN` and
+  `EBAY_MARKETPLACE_ID` (see eBay integration section below)
 
 Lint: `ruff check .` (config in `ruff.toml`).
 
@@ -119,8 +119,42 @@ SKU whose eBay listing was created through the classic Seller Hub UI rather
 than through the Inventory API — the two are different data models and
 classic listings aren't visible via `/inventory_item/{sku}` even when the
 SKU is set correctly. This affects the four `AJANS-001`..`AJANS-004`
-listings described below; listings created via `create_or_update_listing()`
-going forward won't have this issue.
+listings described below. Confirmed by contrast: `AJANS-005`, published
+through the Inventory API, reads back correctly.
+
+### Account prerequisites (one-time, already done for this account)
+
+Publishing through the Inventory API needs all of these to exist first;
+each was set up via API during the eBay go-live:
+- **Merchant location** `AJANS_MAIN` (Herndlgasse 8/15, Wien 1100, AT) —
+  `POST /sell/inventory/v1/location/{key}`. Without it, publish fails.
+- **Business Policies opt-in** — the account was *not* eligible at first
+  (`errorId 20403 "User is not eligible for Business Policy"`); fixed with
+  `POST /sell/account/v1/program/opt_in {"programType":
+  "SELLING_POLICY_MANAGEMENT"}`.
+- **Three policies** (fulfillment / payment / return) on `EBAY_AT`, created
+  via `/sell/account/v1/*_policy`. The fulfillment policy uses a 3-day
+  handling time, consistent with the dropshipping reality documented in
+  `agents/shipping_agent.md`.
+
+Note the token needs `sell.account` scope to read/write policies and
+`sell.fulfillment` for orders — `sell.inventory` alone returns 403 on those
+endpoints. `SCOPE` in `ebay_client.py` covers all three; changing it
+requires redoing the browser OAuth consent to mint a new refresh token.
+
+### Content-Language must match the marketplace
+
+eBay stores inventory records per locale. Sending the wrong `Content-Language`
+lets `PUT /inventory_item/{sku}` succeed (204) while the subsequent
+`POST /offer` fails with `errorId 25751 "SKU ... could not be found ... for
+the marketplace EBAY_AT"` — a confusing failure that looks like the item was
+never created. `MARKETPLACE_LANGUAGES` in `ebay_client.py` maps
+`EBAY_MARKETPLACE_ID` (set in `.env`, currently `EBAY_AT`) to the right
+language tag, and `_request()` sends it on every call.
+
+Taxonomy endpoints (`/commerce/taxonomy/...`, used to look up `categoryId`)
+reject the user token with 403 — they need a plain `client_credentials`
+application token instead.
 
 The four products currently listed on eBay were created manually through
 the browser (Seller Hub UI), not through this client. Each now shares a

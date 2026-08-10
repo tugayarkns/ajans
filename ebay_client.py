@@ -9,7 +9,26 @@ import urllib.request
 REQUEST_TIMEOUT_SECONDS = 30
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 API_BASE = "https://api.ebay.com/sell/inventory/v1"
-SCOPE = "https://api.ebay.com/oauth/api_scope/sell.inventory"
+SCOPE = (
+    "https://api.ebay.com/oauth/api_scope/sell.inventory "
+    "https://api.ebay.com/oauth/api_scope/sell.account "
+    "https://api.ebay.com/oauth/api_scope/sell.fulfillment"
+)
+
+# eBay, envanter kaydini Content-Language'e gore locale bazli saklar. Yanlis dil
+# kodu gonderilirse inventory_item basariyla olusur (204) ama sonraki offer
+# cagrisi "SKU ... could not be found for the marketplace X" (25751) hatasi
+# verir. Bu yuzden dil kodu marketplace ile eslesmek zorunda.
+MARKETPLACE_LANGUAGES = {
+    "EBAY_AT": "de-AT",
+    "EBAY_DE": "de-DE",
+    "EBAY_CH": "de-CH",
+    "EBAY_GB": "en-GB",
+    "EBAY_US": "en-US",
+    "EBAY_FR": "fr-FR",
+    "EBAY_IT": "it-IT",
+    "EBAY_ES": "es-ES",
+}
 
 
 class EbayClient:
@@ -31,6 +50,7 @@ class EbayClient:
         self.client_secret = os.environ["EBAY_CLIENT_SECRET"]
         self.refresh_token = os.environ["EBAY_REFRESH_TOKEN"]
         self.marketplace_id = os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_US")
+        self.content_language = MARKETPLACE_LANGUAGES.get(self.marketplace_id, "en-US")
         self._token = None
         self._token_expires_at = 0
 
@@ -67,7 +87,7 @@ class EbayClient:
         headers = {
             "Authorization": f"Bearer {self._get_token()}",
             "Content-Type": "application/json",
-            "Content-Language": "en-US",
+            "Content-Language": self.content_language,
         }
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
