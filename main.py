@@ -119,7 +119,7 @@ Başla!
             print(f"❌ Hata: {e}")
             return None
 
-    def call_specific_agent(self, agent_name, task, max_tokens=1000):
+    def call_specific_agent(self, agent_name, task, max_tokens=2000):
         agent_name = agent_name.upper()
 
         if agent_name not in self.agents:
