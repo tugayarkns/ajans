@@ -156,6 +156,24 @@ Taxonomy endpoints (`/commerce/taxonomy/...`, used to look up `categoryId`)
 reject the user token with 403 — they need a plain `client_credentials`
 application token instead.
 
+### Category-required aspects
+
+Publishing fails with `errorId 25002` naming a missing aspect (in the
+marketplace's language, e.g. *"Das erforderliche Artikelmerkmal Hersteller
+fehlt"*) unless every aspect that category marks `aspectRequired` is
+supplied. These differ per category — `262203` (car storage) wants
+`Hersteller`, while `123417`/`35190` (phone accessories) want `Marke` and
+`Produktart`, and `Produktart` only accepts values from eBay's own
+enumeration. Look them up with
+`/commerce/taxonomy/v1/category_tree/16/get_item_aspects_for_category?category_id=…`
+(app token) and pass them via `create_or_update_listing(aspects=…)`; the
+default only covers `Marke`/`Herstellernummer`, which is not enough for
+most categories. EU GPSR rules are why `Hersteller` is now mandatory.
+
+Currently listed via the Inventory API on `EBAY_AT`: `AJANS-005`
+(307118017053), `AJANS-006` (307118047792), `AJANS-007` (307118048040),
+`AJANS-008` (307118048374).
+
 The four products currently listed on eBay were created manually through
 the browser (Seller Hub UI), not through this client. Each now shares a
 canonical SKU (`AJANS-001`..`AJANS-004`) with one Shopify variant — set on

@@ -30,6 +30,18 @@ MARKETPLACE_LANGUAGES = {
     "EBAY_ES": "es-ES",
 }
 
+# Offer fiyati, pazarin kendi para biriminde gonderilmek zorunda.
+MARKETPLACE_CURRENCIES = {
+    "EBAY_AT": "EUR",
+    "EBAY_DE": "EUR",
+    "EBAY_FR": "EUR",
+    "EBAY_IT": "EUR",
+    "EBAY_ES": "EUR",
+    "EBAY_CH": "CHF",
+    "EBAY_GB": "GBP",
+    "EBAY_US": "USD",
+}
+
 
 class EbayClient:
     """eBay Sell API (Inventory + Offer) istemcisi.
@@ -51,6 +63,7 @@ class EbayClient:
         self.refresh_token = os.environ["EBAY_REFRESH_TOKEN"]
         self.marketplace_id = os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_US")
         self.content_language = MARKETPLACE_LANGUAGES.get(self.marketplace_id, "en-US")
+        self.currency = MARKETPLACE_CURRENCIES.get(self.marketplace_id, "USD")
         self._token = None
         self._token_expires_at = 0
 
@@ -113,14 +126,18 @@ class EbayClient:
         merchant_location_key,
         condition="NEW",
         image_urls=None,
-        country_of_origin="CN",
+        aspects=None,
     ):
         """Inventory item olusturur/gunceller, offer acar ve yayinlar.
 
         fulfillment_policy_id / payment_policy_id / return_policy_id / merchant_location_key
-        eBay hesabinda (Seller Hub > Business Policies + Shipping locations)
-        onceden tanimlanmis olmali; bu istemci onlari olusturmaz, sadece
-        referans olarak kullanir.
+        eBay hesabinda onceden tanimlanmis olmali (bkz. CLAUDE.md eBay
+        bolumundeki "Account prerequisites"); bu istemci onlari olusturmaz,
+        sadece referans olarak kullanir.
+
+        `title` eBay tarafinda 80 karakterle sinirlidir, asilirsa kirpilir.
+        `aspects` verilmezse pazarin zorunlu tuttugu asgari alanlar
+        (Marke/Herstellernummer) "Markenlos"/"Nicht zutreffend" ile doldurulur.
         """
         self._request(
             "PUT",
@@ -129,37 +146,61 @@ class EbayClient:
                 "availability": {"shipToLocationAvailability": {"quantity": quantity}},
                 "condition": condition,
                 "product": {
-                    "title": title,
+                    "title": title[:80],
                     "description": description_html,
                     "imageUrls": image_urls or [],
+                    "aspects": aspects
+                    or {
+                        "Marke": ["Markenlos"],
+                        "Herstellernummer": ["Nicht zutreffend"],
+                    },
                 },
             },
         )
 
-        offer = self._request(
-            "POST",
-            "/offer",
-            {
-                "sku": sku,
-                "marketplaceId": self.marketplace_id,
-                "format": "FIXED_PRICE",
-                "availableQuantity": quantity,
-                "categoryId": category_id,
-                "listingDescription": description_html,
-                "listingPolicies": {
-                    "fulfillmentPolicyId": fulfillment_policy_id,
-                    "paymentPolicyId": payment_policy_id,
-                    "returnPolicyId": return_policy_id,
-                },
-                "merchantLocationKey": merchant_location_key,
-                "pricingSummary": {"price": {"value": str(price), "currency": "USD"}},
-                "countryOfOrigin": country_of_origin,
+        offer_body = {
+            "sku": sku,
+            "marketplaceId": self.marketplace_id,
+            "format": "FIXED_PRICE",
+            "availableQuantity": quantity,
+            "categoryId": category_id,
+            "listingDescription": description_html,
+            "listingPolicies": {
+                "fulfillmentPolicyId": fulfillment_policy_id,
+                "paymentPolicyId": payment_policy_id,
+                "returnPolicyId": return_policy_id,
             },
-        )
-        offer_id = offer["offerId"]
+            "merchantLocationKey": merchant_location_key,
+            "pricingSummary": {
+                "price": {"value": str(price), "currency": self.currency}
+            },
+        }
+
+        # Bu SKU icin zaten bir offer varsa POST 25002 "Offer entity already
+        # exists" ile patlar (orn. onceki bir denemede offer olusup publish
+        # basarisiz olduysa). O yuzden once mevcut offer aranir, varsa
+        # guncellenir — metodun adindaki "update" kismi budur.
+        offer_id = self._find_offer_id(sku)
+        if offer_id:
+            self._request("PUT", f"/offer/{offer_id}", offer_body)
+        else:
+            offer_id = self._request("POST", "/offer", offer_body)["offerId"]
 
         publish_result = self._request("POST", f"/offer/{offer_id}/publish", {})
         return {"sku": sku, "offer_id": offer_id, "listing_id": publish_result.get("listingId")}
+
+    def _find_offer_id(self, sku):
+        """Bu SKU icin bu pazarda mevcut offer varsa id'sini dondurur."""
+        try:
+            result = self._request(
+                "GET", f"/offer?sku={sku}&marketplace_id={self.marketplace_id}"
+            )
+        except RuntimeError:
+            return None
+        for offer in result.get("offers", []):
+            if offer.get("marketplaceId") == self.marketplace_id:
+                return offer.get("offerId")
+        return None
 
     def get_listing_quantity(self, sku):
         """Bir SKU'nun envanterdeki guncel miktarini dondurur (yoksa None)."""
