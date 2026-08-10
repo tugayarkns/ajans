@@ -21,6 +21,8 @@ Requires in `.env` (loaded via `python-dotenv`):
 - `SHOPIFY_STORE_DOMAIN` (e.g. `norvexget.myshopify.com`)
 - `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET` (custom app credentials, see below)
 - `OPENAI_API_KEY` (product model-photo generation, see below)
+- `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` / `EBAY_REFRESH_TOKEN` (see eBay
+  integration section below)
 
 Lint: `ruff check .` (config in `ruff.toml`).
 
@@ -84,22 +86,41 @@ listed without a photo if this step fails.
 than exiting the process. This is an in-process polling loop, not a
 scheduled task — the terminal must stay open for it to keep running.
 
-## eBay integration (in progress)
+## eBay integration
 
 `ebay_client.py` (`EbayClient`) mirrors `shopify_client.py`'s pattern but
 targets eBay's Sell API (Inventory + Offer), which — unlike Shopify's
 app-only `client_credentials` grant — acts on the seller's behalf and
-requires an `authorization_code`-derived refresh token. **Not yet
-functional**: requires `EBAY_CLIENT_ID`, `EBAY_CLIENT_SECRET`,
-`EBAY_REFRESH_TOKEN` in `.env`, obtained by creating a Production app at
-developer.ebay.com and completing a one-time OAuth consent — this is a
-manual, user-driven step, not something the app does itself. Once those
-credentials exist, `create_or_update_listing()` publishes a listing via the
-Inventory API + Offer API (`listingPolicies` require pre-existing eBay
-Business Policies — fulfillment/payment/return — and a merchant location
-key, set up in Seller Hub, not created by this client). `get_listing_quantity()`
-/ `update_quantity()` read/write stock for a given SKU, feeding
-`inventory_db.py`'s sync.
+requires an `authorization_code`-derived refresh token. **Live and
+functional**: `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` come from a Production
+keyset at developer.ebay.com (Application Keys page); `EBAY_REFRESH_TOKEN`
+comes from a one-time browser OAuth consent (`sell.inventory` scope) via
+`https://auth.ebay.com/oauth2/authorize?...&redirect_uri=<RuName>`, then
+exchanging the returned `code` for a token at
+`https://api.ebay.com/identity/v1/oauth2/token` — this is a manual,
+user-driven step, not something the app does itself, and the refresh token
+is long-lived (~18 months) but not indefinite.
+
+Before the keyset can make production calls, eBay requires subscribing to
+or opting out of "Marketplace Account Deletion" notifications (Application
+Keys → Notifications page). Since AJANS doesn't persist eBay buyer personal
+data, we filed for the **exemption** (toggle "Exempted from Marketplace
+Account Deletion" → Confirm → pick "I do not persist eBay data" → Submit)
+rather than standing up a public HTTPS webhook endpoint.
+
+`create_or_update_listing()` publishes a listing via the Inventory API +
+Offer API (`listingPolicies` require pre-existing eBay Business Policies —
+fulfillment/payment/return — and a merchant location key, set up in Seller
+Hub, not created by this client). `get_listing_quantity()` / `update_quantity()`
+read/write stock for a given SKU, feeding `inventory_db.py`'s sync.
+
+Note: `get_listing_quantity()` returns `None` (404 from the API) for any
+SKU whose eBay listing was created through the classic Seller Hub UI rather
+than through the Inventory API — the two are different data models and
+classic listings aren't visible via `/inventory_item/{sku}` even when the
+SKU is set correctly. This affects the four `AJANS-001`..`AJANS-004`
+listings described below; listings created via `create_or_update_listing()`
+going forward won't have this issue.
 
 The four products currently listed on eBay were created manually through
 the browser (Seller Hub UI), not through this client. Each now shares a
@@ -121,8 +142,8 @@ update doesn't clobber the other channel's last known value. Depends on
 `ShopifyClient.get_product_quantity(sku)` / `EbayClient.get_listing_quantity(sku)`
 existing and on both channels' listings sharing the same SKU — not yet
 wired into `main.py`'s `run_automatic()` loop (planned as a third step
-alongside `list_products()` / `check_shopify_orders()` once the eBay side
-is live).
+alongside `list_products()` / `check_shopify_orders()`; the eBay side is
+now live, this wiring just hasn't been done yet).
 
 ## Live panel
 
