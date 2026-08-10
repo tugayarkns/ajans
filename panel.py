@@ -270,6 +270,7 @@ function escapeHtml(str) {
   div.textContent = String(str);
   return div.innerHTML;
 }
+let _lastPendingSig = null;
 async function decide(id, action, btn) {
   const card = btn.closest('.pcard');
   card.querySelectorAll('button').forEach(b => b.disabled = true);
@@ -302,6 +303,9 @@ async function refresh() {
     `;
     const pending = data.pending || [];
     document.getElementById('pending-count').textContent = pending.length ? `${pending.length} urun` : '';
+    const pendingSig = pending.map(p => p.id).join(',');
+    if (pendingSig !== _lastPendingSig) {
+    _lastPendingSig = pendingSig;
     document.getElementById('pending-grid').innerHTML = pending.length ? pending.map(p => {
       const cur = p.currency || 'EUR';
       const shipping = p.shipping_cost || 0;
@@ -313,11 +317,11 @@ async function refresh() {
       const images = (p.image_urls && p.image_urls.length) ? p.image_urls : (p.image_url ? [p.image_url] : []);
       const descText = (p.description_html || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();
       const cardId = 'p_' + escapeHtml(p.id);
-      const thumbs = images.slice(0, 6).map((url, i) => `<img src="${escapeHtml(url)}" class="${i===0?'active':''}" loading="lazy" onclick="document.getElementById('${cardId}_main').src=this.src; this.parentElement.querySelectorAll('img').forEach(im=>im.classList.remove('active')); this.classList.add('active');">`).join('');
+      const thumbs = images.slice(0, 6).map((url, i) => `<img src="${escapeHtml(url)}" referrerpolicy="no-referrer" class="${i===0?'active':''}" onclick="document.getElementById('${cardId}_main').src=this.src; this.parentElement.querySelectorAll('img').forEach(im=>im.classList.remove('active')); this.classList.add('active');">`).join('');
       const moreCount = images.length - 6;
       return `
       <div class="pcard" data-id="${escapeHtml(p.id)}">
-        <img id="${cardId}_main" src="${escapeHtml(images[0] || '')}" alt="" loading="lazy">
+        <img id="${cardId}_main" src="${escapeHtml(images[0] || '')}" referrerpolicy="no-referrer" alt="">
         ${images.length > 1 ? `<div class="thumbs">${thumbs}${moreCount > 0 ? `<div class="more">+${moreCount}</div>` : ''}</div>` : ''}
         <div class="body">
           ${p.needs_review ? '<div class="desc" style="color:var(--amber); border-color:var(--amber);">⚠️ PRODUCT_AGENT bu urunde bir sorun isaretledi (fiyat/aciklama eksik olabilir) — onaylamadan once dikkatlice kontrol edin.</div>' : ''}
@@ -340,6 +344,7 @@ async function refresh() {
       </div>
     `;
     }).join('') : '<div class="empty" style="grid-column:1/-1;">Onay bekleyen urun yok.</div>';
+    }
     const countEl = document.getElementById('event-count');
     countEl.textContent = data.events.length ? `${data.events.length} olay` : '';
     document.getElementById('rows').innerHTML = data.events.length ? data.events.map(e => `
