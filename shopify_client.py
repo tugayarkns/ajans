@@ -4,6 +4,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime, timedelta
 
 PROCESSED_TAG = "ajans-islendi"
 REQUEST_TIMEOUT_SECONDS = 30
@@ -94,7 +95,8 @@ class ShopifyClient:
     def get_active_products(self):
         """Magazada aktif/yayinda olan urunleri basit bir listede dondurur."""
         result = self._request(
-            "GET", "/products.json?status=active&limit=250&fields=title,body_html,variants"
+            "GET",
+            "/products.json?status=active&limit=250&fields=id,handle,title,body_html,variants",
         )
         products = []
         for p in result.get("products", []):
@@ -105,12 +107,43 @@ class ShopifyClient:
                 if v.get("inventory_quantity") is not None
             ]
             products.append({
+                "id": p.get("id"),
+                "handle": p.get("handle"),
                 "title": p["title"],
                 "price_min": min(prices) if prices else None,
                 "price_max": max(prices) if prices else None,
                 "inventory_quantity": sum(quantities) if quantities else None,
             })
         return products
+
+    def get_order_stats(self, days=7):
+        """Son N gundeki siparis sayisi + toplam ciroyu dondurur.
+
+        Panel'in analitik thread'inden cagrilir; asla raise etmez, hata
+        durumunda {"ok": False, "error": ...} doner ki tek bir API hatasi
+        panel'in arka plan thread'ini durdurmasin.
+        """
+        try:
+            created_at_min = (
+                datetime.now(UTC) - timedelta(days=days)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = self._request(
+                "GET",
+                f"/orders.json?status=any&created_at_min={created_at_min}"
+                "&limit=250&fields=id,total_price,currency",
+            )
+            orders = result.get("orders", [])
+            revenue = sum(float(o["total_price"]) for o in orders if o.get("total_price"))
+            currency = next((o.get("currency") for o in orders if o.get("currency")), None)
+            return {
+                "ok": True,
+                "order_count": len(orders),
+                "revenue": revenue,
+                "currency": currency or "EUR",
+                "window_days": days,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e), "window_days": days}
 
     def update_variant_sku(self, variant_id, sku):
         """Bir variant'in SKU alanini gunceller (capraz-kanal stok eslestirmesi icin)."""

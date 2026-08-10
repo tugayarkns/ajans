@@ -10,3 +10,5 @@ ekran.jpg
 activity_log.jsonl
 inventory.db
 pending_products.json
+panel_admins.json
+.panel_session_secret

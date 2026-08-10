@@ -1,3 +1,4 @@
+import getpass
 import json
 import os
 import sys
@@ -9,6 +10,7 @@ from dotenv import load_dotenv
 
 import inventory_db
 import panel
+import panel_auth
 import product_image
 from ebay_client import EbayClient
 from shopify_client import ShopifyClient
@@ -255,6 +257,74 @@ Başla!
                 f"eBay {order.get('orderId')}", items, channel="ebay"
             )
 
+    def sync_inventory(self):
+        """Shopify'daki satislari eBay'in kucuk, kasitli havuz miktarina yansitir.
+
+        Shopify tarafinda urunler buyuk (gercek tedarikci) stokla listeli,
+        eBay tarafinda ise kasitli olarak daha kucuk bir satis kotasi
+        (pool_qty) verilmis (bkz. CLAUDE.md "Stock sync"). Bu yuzden yon
+        tek tarafli: Shopify'da native stok dustugunde (bir siparis
+        odendiginde), aradaki fark kadar eBay'in kotasi da dusurulur — boylece
+        eBay ayni SKU'dan Shopify'da zaten satilmis birimi tekrar satamaz.
+
+        AJANS-001..004 klasik Seller Hub uzerinden yayinlandigi icin eBay
+        Inventory API bu SKU'lari goremiyor (get_listing_quantity None doner,
+        bkz. CLAUDE.md); bu SKU'lar icin senkron sessizce atlanir, Inventory
+        API'ye tasindiklarinda otomatik calismaya baslar.
+        """
+        try:
+            shopify = ShopifyClient()
+            ebay = EbayClient()
+        except KeyError as e:
+            print(f"❌ Stok senkronu icin ayarlar eksik: {e} .env dosyasinda tanimli degil\n")
+            return
+
+        print("\n🔄 Kanallar arasi stok senkronu kontrol ediliyor...\n")
+        for row in inventory_db.get_all():
+            sku = row["sku"]
+            try:
+                fresh_shopify_qty = shopify.get_product_quantity(sku)
+            except Exception as e:
+                print(f"⚠️ {sku}: Shopify stok kontrolu basarisiz: {e}\n")
+                fresh_shopify_qty = None
+            try:
+                fresh_ebay_qty = ebay.get_listing_quantity(sku)
+            except Exception as e:
+                print(f"⚠️ {sku}: eBay stok kontrolu basarisiz: {e}\n")
+                fresh_ebay_qty = None
+
+            if fresh_shopify_qty is None and fresh_ebay_qty is None:
+                continue
+
+            last_shopify_qty = row["shopify_qty"]
+            if (
+                fresh_shopify_qty is not None
+                and last_shopify_qty is not None
+                and fresh_ebay_qty is not None
+                and fresh_shopify_qty < last_shopify_qty
+            ):
+                sold_on_shopify = last_shopify_qty - fresh_shopify_qty
+                new_ebay_qty = max(0, fresh_ebay_qty - sold_on_shopify)
+                if new_ebay_qty != fresh_ebay_qty:
+                    try:
+                        ebay.update_quantity(sku, new_ebay_qty)
+                        fresh_ebay_qty = new_ebay_qty
+                        msg = (
+                            f"{sku}: Shopify'da {sold_on_shopify} adet satildi, "
+                            f"eBay kotasi {new_ebay_qty}'e dusuruldu"
+                        )
+                        print(f"✅ {msg}\n")
+                        panel.log_event("stok", msg, "success")
+                    except Exception as e:
+                        print(f"⚠️ {sku}: eBay stok guncellenemedi: {e}\n")
+                        panel.log_event("stok", f"{sku}: eBay stok guncellenemedi: {e}", "error")
+
+            pool_qty = fresh_ebay_qty if fresh_ebay_qty is not None else row["pool_qty"]
+            inventory_db.upsert(
+                sku, row["title"], pool_qty,
+                shopify_qty=fresh_shopify_qty, ebay_qty=fresh_ebay_qty,
+            )
+
     def list_products(self):
         if "PRODUCT_AGENT" not in self.agents:
             print("❌ Product Agent bulunamadı!\n")
@@ -408,6 +478,11 @@ Başla!
                         "otomatik", f"eBay sipariş kontrolü hatası: {e}", "error"
                     )
                     print(f"❌ eBay sipariş kontrolü sırasında beklenmeyen hata: {e}\n")
+                try:
+                    self.sync_inventory()
+                except Exception as e:
+                    panel.log_event("otomatik", f"Stok senkronu hatası: {e}", "error")
+                    print(f"❌ Stok senkronu sırasında beklenmeyen hata: {e}\n")
                 print(f"😴 {interval_seconds} saniye bekleniyor...\n")
                 time.sleep(interval_seconds)
         except KeyboardInterrupt:
@@ -415,24 +490,46 @@ Başla!
             print("\n\n⏹️ Otomatik mod durduruldu, ana menüye dönülüyor.\n")
 
 
+def _prompt_create_first_admin():
+    print("\n⚠️  Panel için tanımlı admin yok — giriş ekranını kimse geçemez.")
+    print("İlk admin hesabını şimdi oluşturalım (istersen 'admin-ekle' ile sonra da eklenebilir).")
+    email = input("📧 Admin e-posta: ").strip()
+    if not email:
+        print("Atlandı — panele 'admin-ekle' komutuyla sonra admin ekleyebilirsin.\n")
+        return
+    password = getpass.getpass("🔑 Admin şifresi: ").strip()
+    if not password:
+        print("Atlandı — panele 'admin-ekle' komutuyla sonra admin ekleyebilirsin.\n")
+        return
+    panel_auth.add_admin(email, password)
+    print(f"✅ Admin eklendi: {email}\n")
+
+
 def main():
     panel_url = panel.start()
     system = MultiAgentSystem()
+
+    if not panel_auth.has_any_admin():
+        _prompt_create_first_admin()
 
     print("\n" + "="*60)
     print("🚀 MULTI-AGENT SİPARİŞ YÖNETİM SİSTEMİ")
     print("="*60)
     print(f"\n📊 Canlı panel: {panel_url}  (tarayıcıda açık tutabilirsiniz)")
+    print("   Panel artık ağdaki diğer cihazlardan da erişilebilir (0.0.0.0);")
+    print("   paylaşacağın link bu bilgisayarın ağ IP'si + port olacak, örn. http://192.168.x.x:8765")
     print("\n📌 Komutlar:")
     print("  1. Yeni sipariş gir (Örn: 'Müşteri Ahmet, iPhone case, 2 adet')")
     print("  2. 'ajan ORDER_AGENT' şeklinde spesifik ajan çağır")
     print("  3. 'loglar' yazarak tüm siparişleri göster")
     print("  4. 'shopify' yazarak mağazadaki yeni siparişleri işle")
     print("  4b. 'ebay' yazarak eBay'deki yeni siparişleri işle")
+    print("  4c. 'stok' yazarak Shopify↔eBay stok senkronunu çalıştır")
     print("  5. 'urunler' yazarak products.json'daki yeni ürünleri mağazaya ekle")
     print("  6. 'otomatik' yazarak sürekli çalışan modu başlat (Ctrl+C ile durdur)")
     print("  7. 'pazarlama' yazarak ücretsiz müşteri bulma planı üret")
-    print("  8. 'çık' yazarak programı kapat\n")
+    print("  8. 'admin-ekle' / 'admin-liste' / 'admin-sil' ile panel girişlerini yönet")
+    print("  9. 'çık' yazarak programı kapat\n")
 
     while True:
         try:
@@ -454,6 +551,9 @@ def main():
             elif user_input.lower() == "ebay":
                 system.check_ebay_orders()
 
+            elif user_input.lower() == "stok":
+                system.sync_inventory()
+
             elif user_input.lower() == "urunler":
                 system.list_products()
 
@@ -462,6 +562,29 @@ def main():
 
             elif user_input.lower() == "pazarlama":
                 system.run_marketing()
+
+            elif user_input.lower() == "admin-ekle":
+                email = input("📧 Admin e-posta: ").strip()
+                password = getpass.getpass("🔑 Admin şifresi: ").strip()
+                if email and password:
+                    panel_auth.add_admin(email, password)
+                    print(f"✅ Admin eklendi/güncellendi: {email}\n")
+                else:
+                    print("❌ E-posta ve şifre boş olamaz\n")
+
+            elif user_input.lower() == "admin-liste":
+                admins = panel_auth.list_admin_emails()
+                if admins:
+                    print("👤 Tanımlı adminler: " + ", ".join(admins) + "\n")
+                else:
+                    print("📭 Tanımlı admin yok\n")
+
+            elif user_input.lower() == "admin-sil":
+                email = input("📧 Silinecek admin e-posta: ").strip()
+                if panel_auth.remove_admin(email):
+                    print(f"✅ Admin silindi: {email}\n")
+                else:
+                    print(f"❌ Admin bulunamadı: {email}\n")
 
             elif user_input.lower().startswith("ajan "):
                 agent_name = user_input[5:].strip()

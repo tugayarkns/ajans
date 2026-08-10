@@ -5,6 +5,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime, timedelta
 
 REQUEST_TIMEOUT_SECONDS = 30
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
@@ -232,6 +233,35 @@ class EbayClient:
         )
         result = self._request("GET", query, base=FULFILLMENT_API_BASE)
         return result.get("orders", [])
+
+    def get_order_stats(self, days=7):
+        """Son N gundeki siparis sayisi + toplam ciroyu dondurur.
+
+        ShopifyClient.get_order_stats() ile ayni sozlesmeyi kullanir; asla
+        raise etmez, hata durumunda {"ok": False, "error": ...} doner.
+        """
+        try:
+            now = datetime.now(UTC)
+            start = (now - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            end = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            query = (
+                f"/order?filter=creationdate:[{start}..{end}]&limit=200"
+            )
+            result = self._request("GET", query, base=FULFILLMENT_API_BASE)
+            orders = result.get("orders", [])
+            revenue = sum(
+                float(o.get("pricingSummary", {}).get("total", {}).get("value") or 0)
+                for o in orders
+            )
+            return {
+                "ok": True,
+                "order_count": len(orders),
+                "revenue": revenue,
+                "currency": self.currency,
+                "window_days": days,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e), "window_days": days}
 
     @staticmethod
     def format_order_for_agent(order):
