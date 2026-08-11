@@ -118,6 +118,34 @@ surface is catalog-only (find / import / preview / push / remap supplier /
 inventory policy) and exposes no order-placement endpoint, so nothing in
 this codebase can place the AliExpress order on the merchant's behalf.
 
+Because the red panel task (see above) only surfaces while the panel tab is
+open, `notifier.py`'s `send_supplier_alert()` also emails the same warning —
+called right after `panel.log_event("tedarikci", ...)` in
+`_warn_supplier_order_required()`. It posts to the Resend HTTP API
+(`RESEND_API_KEY` / `NOTIFY_EMAIL_TO` in `.env`) via stdlib `urllib`, not
+`requests` (this repo has no HTTP client dependency — `shopify_client.py`
+and `ebay_client.py` both already use `urllib` for the same reason).
+Gmail SMTP + App Password was tried first and rejected every login attempt
+with `535 5.7.8 BadCredentials` even with a freshly generated,
+byte-verified-correct app password (confirmed via SMTP debug trace) — the
+account-side cause couldn't be identified from the browser, so this was
+abandoned in favor of Resend. Missing config makes `send_supplier_alert()`
+a silent no-op (logged once as an `info` panel event, not an error) so a
+merchant who hasn't set it up yet sees no behavior change. Send failures
+are caught and logged, never raised — this is best-effort and must not
+block order processing. Resend's sandbox sender (`onboarding@resend.dev`,
+the default for `NOTIFY_EMAIL_FROM`) only delivers to the email address
+the Resend account itself was signed up with, until a custom domain is
+verified — fine here since `NOTIFY_EMAIL_TO` is the same address
+(`tugayarkns@gmail.com`, the account this whole integration is under —
+note the trailing "s", easy to mistype as `tugayarkn@gmail.com`).
+
+The first Resend call also failed, with a Cloudflare `403`/error `1010`
+(not a Resend-shaped error body) — Cloudflare sits in front of
+`api.resend.com` and was rejecting `urllib`'s default `Python-urllib/x.y`
+User-Agent as bot traffic. Fixed by sending a browser-like `User-Agent`
+header; see `notifier.py`'s request headers.
+
 ## Product image generation
 
 **AI never generates product photos.** `product_image.py` only makes the brand

@@ -30,6 +30,7 @@ Numaralar sistemdeki **akış sırasına** göredir: ürün bulunur (1-6), yayı
 | Stok yanlış / aşırı satış | **28**, **29**, **30** |
 | Sipariş iki kez işleniyor | **19** |
 | Tedarikçiye sipariş hatırlatması | **26**, **27** |
+| Tedarikçi görevi e-postası gelmiyor | **26b**, **39** |
 | Panele giriş yapılamıyor | **32**, **33** |
 | Panel hiç açılmıyor | **31** |
 | Ajanın yazdığı metin/başlık kötü | **3**, **20-25** |
@@ -237,6 +238,16 @@ vermez, gerçek kargo etiketi almaz. Bu yüzden her sipariş sonrası panelde en
 Bunu sen yapmazsan **müşteri parayı ödemiş ama ürün hiç gönderilmemiş olur**.
 *Bozulursa:* Kırmızı görev satırı çıkmaz — ödenmiş sipariş sessizce kaybolur.
 `main.py → _warn_supplier_order_required` + `inventory_db.py → add_supplier_task`
+
+**26b — Tedarikçi görevi e-posta uyarısı**
+26 numaradaki kırmızı satır sadece panel açıkken görünür. Bu adım aynı uyarıyı
+`.env`'deki adrese e-posta olarak da yollar — panel kapalıyken de ödenmiş bir
+siparişin gözden kaçmaması için. Resend API kullanır (Gmail SMTP + uygulama
+şifresi bu hesapta 535 hatasıyla çalışmadı). `.env`'de `RESEND_API_KEY` /
+`NOTIFY_EMAIL_TO` boşsa bu adım sessizce atlanır, mevcut akış bozulmaz.
+*Bozulursa:* E-posta gelmez ama panel görevi yine de doğru şekilde açılır —
+buradaki hata siparişi kaybettirmez, sadece uyarıyı geciktirir.
+`notifier.py → send_supplier_alert`
 
 **27 — "Sipariş verdim" düğmesi**
 26'daki kırmızı görevi kapattığın düğme. Kayıt silinmez, "yapıldı" işaretlenir.

@@ -9,6 +9,7 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 import inventory_db
+import notifier
 import panel
 import panel_auth
 from ebay_client import EbayClient
@@ -214,6 +215,7 @@ Başla!
         )
         panel.log_event("tedarikci", msg, "error")
         print(f"\n{msg}\n")
+        notifier.send_supplier_alert(order_ref, items, channel=channel)
 
     def check_ebay_orders(self):
         """eBay'deki yeni siparisleri ayni ajan hattindan gecirir.
