@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -10,12 +11,118 @@ from datetime import UTC, datetime, timedelta
 REQUEST_TIMEOUT_SECONDS = 30
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 API_BASE = "https://api.ebay.com/sell/inventory/v1"
+ACCOUNT_API_BASE = "https://api.ebay.com/sell/account/v1"
 FULFILLMENT_API_BASE = "https://api.ebay.com/sell/fulfillment/v1"
+TAXONOMY_API_BASE = "https://api.ebay.com/commerce/taxonomy/v1"
+BROWSE_API_BASE = "https://api.ebay.com/buy/browse/v1"
 SCOPE = (
     "https://api.ebay.com/oauth/api_scope/sell.inventory "
     "https://api.ebay.com/oauth/api_scope/sell.account "
     "https://api.ebay.com/oauth/api_scope/sell.fulfillment"
 )
+# Taksonomi uc noktalari kullanici token'ini reddediyor (403), sadece duz
+# client_credentials app token kabul ediyor (bkz. CLAUDE.md eBay bolumu).
+APP_SCOPE = "https://api.ebay.com/oauth/api_scope"
+
+# Zorunlu marka/uretici aspect'leri icin GPSR uyumlu "marka yok" degerleri
+# (bkz. CLAUDE.md "Category-required aspects").
+_ASPECT_DEFAULTS = {
+    "Marke": "Markenlos",
+    "Brand": "Unbranded",
+    "Hersteller": "Nicht zutreffend",
+    "Herstellernummer": "Nicht zutreffend",
+    "MPN": "Does not apply",
+    "Manufacturer": "Does not apply",
+    "Manufacturer Part Number": "Does not apply",
+}
+
+# Bilinmeyen zorunlu alanlar icin pazarin dilinde "gecerli degil" karsiligi.
+# Serbest-metin alanlarda eBay'in "onerilen" ilk degerini kullanmak fiziksel
+# olcu uydurmaya yol aciyordu (orn. bilinmeyen bir urune "Item Height: 15 cm"
+# yazmak) - alicinin gordugu bilgi yanlis olacagi icin bunun yerine acikca
+# "belirtilmemis" denir.
+_NOT_APPLICABLE_BY_LANGUAGE = {
+    "de": "Nicht zutreffend",
+    "en": "Does not apply",
+    "fr": "Sans objet",
+    "it": "Non applicabile",
+    "es": "No aplicable",
+}
+
+# Shopify magazasi EUR uzerinden fiyatlandiriyor (bkz. CLAUDE.md); eBay'e
+# baska para biriminde yayinlarken bu sabit yaklasik kurlarla EUR'dan
+# cevrilir. Sabit kur - canli doviz API'si degil - periyodik olarak elle
+# guncellenmesi gerekir (bkz. panel.convert_price_from_eur).
+EUR_EXCHANGE_RATES = {
+    "EUR": 1.0,
+    "USD": 1.08,
+    "GBP": 0.86,
+    "CHF": 0.95,
+}
+
+
+# eBay'in payload'dan bagimsiz, rastgele donebildigi gecici hatalari:
+# 25604 ("Availability not found") mevcut ve gecerli bir inventory_item/offer
+# guncellenirken bile cikabiliyor; 25001 ise eBay'in kendi sunucu hatasi
+# ("Core Inventory Service internal error", HTTP 500). Ikisi de ayni istek
+# tekrarlandiginda geciyor - canliya cikan bir urunun sirf bu yuzden
+# yayinlanmadan kalmamasi icin _request() bunlari otomatik tekrar dener.
+_TRANSIENT_ERROR_IDS = ("25604", "25001")
+TRANSIENT_RETRY_ATTEMPTS = 3
+TRANSIENT_RETRY_DELAY_SECONDS = 3
+
+# Kategori aramasina baslik disinda eklenen aciklama uzunlugu (bkz.
+# suggest_category) - tum aciklamayi gondermek aramayi sulandiriyor.
+CATEGORY_QUERY_DESCRIPTION_CHARS = 150
+
+
+def _is_transient_error(detail):
+    try:
+        errors = json.loads(detail).get("errors") or []
+    except (json.JSONDecodeError, AttributeError):
+        return False
+    return any(str(e.get("errorId")) in _TRANSIENT_ERROR_IDS for e in errors)
+
+
+COMPETITION_QUERY_WORDS = 5
+_QUERY_STOPWORDS = {
+    "in", "for", "with", "and", "the", "of", "to", "on", "your", "a", "an",
+}
+
+
+def _search_query(title):
+    """Urun basligini rakip aramasi icin kisa, jenerik bir sorguya cevirir.
+
+    Magaza basliklari pazarlama amacli uzun ve tireli ("... — Anti-Slip
+    Collapsible Boot Storage for SUV"); bu haliyle aranirsa eBay 0 sonuc
+    dondurur ve her urun rakipsiz gorunur. Once tire/virgul oncesi ana kisim
+    alinir, dolgu kelimeler atilir, sonra ilk birkac kelimeye inilir.
+    """
+    # Ayirici olarak yalniz uzun tire / bosluklu tire ve noktalama kullanilir;
+    # kelime ici tire bolunmez ("Multi-Pocket" -> "Multi" olunca sorgu
+    # anlamsizlasip milyonlarca sonuc donuyordu).
+    head = re.split(r"[—–|,:(]|\s-\s", title or "", maxsplit=1)[0]
+    words = [
+        w for w in re.findall(r"[\w']+", head)
+        if len(w) > 1 and w.lower() not in _QUERY_STOPWORDS
+    ]
+    return " ".join(words[:COMPETITION_QUERY_WORDS])
+
+
+def _truncate_title(title, limit=80):
+    """Basligi eBay'in 80 karakter sinirina, kelime ortasindan kesmeden sigdirir.
+
+    Duz `title[:80]` bir kelimeyi yarida kesip ("...Earbuds" -> "...Earbu" gibi)
+    kirik/guvensiz gorunen basliklar uretiyordu - alici gozunden bu bir
+    profesyonellik/guven sorunu.
+    """
+    if len(title) <= limit:
+        return title
+    cut = title[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > 0:
+        cut = cut[:last_space]
+    return cut.rstrip(" -–—,")
 
 # eBay, envanter kaydini Content-Language'e gore locale bazli saklar. Yanlis dil
 # kodu gonderilirse inventory_item basariyla olusur (204) ama sonraki offer
@@ -59,15 +166,33 @@ class EbayClient:
     girilene kadar calisir durumda degildir (bkz. CLAUDE.md eBay bolumu).
     """
 
-    def __init__(self):
+    def __init__(self, marketplace_id=None):
+        """`marketplace_id` verilirse `EBAY_MARKETPLACE_ID` .env degerinin yerine
+        gecer - ayni hesaptan birden fazla eBay sitesine (orn. EBAY_AT + EBAY_US)
+        yayin yapmak icin her site kendi marketplace_id'siyle ayri bir
+        EbayClient orneği kullanir (bkz. panel.py sync_ebay_listing).
+        """
         self.client_id = os.environ["EBAY_CLIENT_ID"]
         self.client_secret = os.environ["EBAY_CLIENT_SECRET"]
         self.refresh_token = os.environ["EBAY_REFRESH_TOKEN"]
-        self.marketplace_id = os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_US")
+        self.marketplace_id = marketplace_id or os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_US")
         self.content_language = MARKETPLACE_LANGUAGES.get(self.marketplace_id, "en-US")
         self.currency = MARKETPLACE_CURRENCIES.get(self.marketplace_id, "USD")
         self._token = None
         self._token_expires_at = 0
+        self._app_token = None
+        self._app_token_expires_at = 0
+        self._category_tree_id = None
+
+    def convert_price_from_eur(self, price_eur):
+        """Shopify'in EUR fiyatini bu clientin marketplace para birimine cevirir.
+
+        Cevrim yapilmadan (orn. EUR_-16.99 -> USD_16.99 gibi ayni sayiyla)
+        yayinlamak, kur farkinin (~%8-10) tamamini karsiliksiz kaybettirir -
+        bkz. CLAUDE.md eBay bolumu.
+        """
+        rate = EUR_EXCHANGE_RATES.get(self.currency, 1.0)
+        return round(float(price_eur) * rate, 2)
 
     def _get_token(self):
         if self._token and time.time() < self._token_expires_at - 60:
@@ -97,22 +222,178 @@ class EbayClient:
         self._token_expires_at = time.time() + payload.get("expires_in", 7200)
         return self._token
 
+    def _get_app_token(self):
+        """Taksonomi uc noktalari icin duz client_credentials app token'i (kullanici
+        token'inden ayri, kendi cache'inde tutulur - bkz. modul basindaki APP_SCOPE notu).
+        """
+        if self._app_token and time.time() < self._app_token_expires_at - 60:
+            return self._app_token
+
+        credentials = f"{self.client_id}:{self.client_secret}"
+        auth_header = base64.b64encode(credentials.encode()).decode()
+        data = urllib.parse.urlencode(
+            {"grant_type": "client_credentials", "scope": APP_SCOPE}
+        ).encode()
+        req = urllib.request.Request(
+            TOKEN_URL,
+            data=data,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {auth_header}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+            payload = json.loads(resp.read())
+
+        self._app_token = payload["access_token"]
+        self._app_token_expires_at = time.time() + payload.get("expires_in", 7200)
+        return self._app_token
+
     def _request(self, method, path, body=None, base=API_BASE):
+        """eBay Sell API cagrisi; gecici hatalarda otomatik tekrar dener.
+
+        `_TRANSIENT_ERROR_IDS`'teki hatalar payload'dan bagimsiz, rastgele
+        ortaya cikip ayni istek tekrarlandiginda gecebiliyor - kalici
+        hatalar (eksik aspect, gecersiz kategori vb.) ilk denemede raise
+        edilir, tekrar denemek onlarda anlamsiz olurdu.
+        """
         url = f"{base}{path}"
-        headers = {
-            "Authorization": f"Bearer {self._get_token()}",
-            "Content-Type": "application/json",
-            "Content-Language": self.content_language,
-        }
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+        last_error = None
+        for attempt in range(TRANSIENT_RETRY_ATTEMPTS):
+            headers = {
+                "Authorization": f"Bearer {self._get_token()}",
+                "Content-Type": "application/json",
+                "Content-Language": self.content_language,
+            }
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                    raw = resp.read()
+                    return json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode(errors="replace")
+                error = RuntimeError(f"eBay API hatasi ({e.code}): {detail}")
+                if not _is_transient_error(detail):
+                    raise error from e
+                last_error = error
+                if attempt < TRANSIENT_RETRY_ATTEMPTS - 1:
+                    time.sleep(TRANSIENT_RETRY_DELAY_SECONDS)
+
+        raise last_error
+
+    def _taxonomy_request(self, path):
+        url = f"{TAXONOMY_API_BASE}{path}"
+        headers = {"Authorization": f"Bearer {self._get_app_token()}"}
+        req = urllib.request.Request(url, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")
-            raise RuntimeError(f"eBay API hatasi ({e.code}): {detail}") from e
+            raise RuntimeError(f"eBay taksonomi API hatasi ({e.code}): {detail}") from e
+
+    def count_competing_listings(self, query):
+        """Bu pazarda `query` icin kac ilan oldugunu dondurur (bulunamazsa None).
+
+        "Baskalarinin gozunden kacan urun" olcusu: az rakip = doymamis nis.
+        Browse API'yi **app token** ile cagirir (taksonomi gibi; kullanici
+        token'i gerekmez, dolayisiyla yeni bir OAuth izni de gerekmez).
+
+        Sorgu `_search_query()` ile kisaltilir: tam urun basligiyla arama
+        neredeyse her zaman 0 dondurur (baslik cok spesifik) ve her urun
+        "rakipsiz" gorunur - bu olcuyu tamamen ise yaramaz hale getiriyordu.
+
+        Asla raise etmez - rakip verisi bir bonus sinyal, alinamazsa
+        trust_score onu notr puanliyor (bkz. trust_score.COMPETITION_BANDS).
+        """
+        url = (
+            f"{BROWSE_API_BASE}/item_summary/search"
+            f"?q={urllib.parse.quote(_search_query(query))}&limit=1"
+        )
+        headers = {
+            "Authorization": f"Bearer {self._get_app_token()}",
+            "X-EBAY-C-MARKETPLACE-ID": self.marketplace_id,
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                return json.loads(resp.read()).get("total")
+        except Exception:
+            return None
+
+    def _get_category_tree_id(self):
+        if self._category_tree_id:
+            return self._category_tree_id
+        result = self._taxonomy_request(
+            f"/get_default_category_tree_id?marketplace_id={self.marketplace_id}"
+        )
+        self._category_tree_id = result["categoryTreeId"]
+        return self._category_tree_id
+
+    def suggest_category(self, title, description_text=None):
+        """Urun basligi (+ varsa aciklamasi) icin en uygun eBay kategorisini bulur.
+
+        Kategoriler pazar/urun turune gore cok farkli zorunlu alanlar
+        isteyebildigi icin (bkz. CLAUDE.md "Category-required aspects"), sabit
+        tek kategori yerine her urun icin ayri kategori aranir.
+
+        `description_text` verilirse sorguya eklenir: salt baslikla arama
+        yaniltici olabiliyor (orn. "Monitor Light Bar" -> ekranli cihaz
+        kategorisi), aciklamadaki baglam ("clip onto the top of your
+        monitor") daha isabetli eslesme sagliyor. Bulunamazsa None doner.
+        """
+        query = title
+        if description_text:
+            query = f"{title} {description_text[:CATEGORY_QUERY_DESCRIPTION_CHARS]}"
+        tree_id = self._get_category_tree_id()
+        result = self._taxonomy_request(
+            f"/category_tree/{tree_id}/get_category_suggestions?q={urllib.parse.quote(query)}"
+        )
+        suggestions = result.get("categorySuggestions") or []
+        if not suggestions:
+            return None
+        return suggestions[0]["category"]["categoryId"]
+
+    def get_required_aspects(self, category_id):
+        """Bir kategorinin zorunlu tuttugu aspect'leri (varsayilan degerlerle) dondurur.
+
+        Marka/uretici alanlari GPSR uyumlu "marka yok" degerlerini alir
+        (_ASPECT_DEFAULTS). Geri kalan zorunlu alanlarda urunun gercek
+        degerini bilmedigimiz icin:
+        - serbest metne izin veriliyorsa pazarin dilinde "gecerli degil"
+          yazilir; eBay'in onerdigi ilk degeri secmek "Item Height: 15 cm"
+          gibi UYDURULMUS olculer uretiyordu, alici bunu gercek zannederdi.
+        - sadece listeden secim yapilabiliyorsa (SELECTION_ONLY) mecburen
+          ilk gecerli deger kullanilir; tam isabetli olmayabilir ama alan
+          bos birakilamaz, aksi halde ilan hic yayinlanamaz.
+        """
+        tree_id = self._get_category_tree_id()
+        result = self._taxonomy_request(
+            f"/category_tree/{tree_id}/get_item_aspects_for_category?category_id={category_id}"
+        )
+        fallback = _NOT_APPLICABLE_BY_LANGUAGE.get(
+            self.content_language.split("-")[0], "Does not apply"
+        )
+        aspects = {}
+        for aspect in result.get("aspects", []):
+            constraint = aspect.get("aspectConstraint", {})
+            if not constraint.get("aspectRequired"):
+                continue
+            name = aspect.get("localizedAspectName")
+            if not name:
+                continue
+            if name in _ASPECT_DEFAULTS:
+                aspects[name] = [_ASPECT_DEFAULTS[name]]
+                continue
+            if constraint.get("aspectMode") == "SELECTION_ONLY":
+                values = [v.get("localizedValue") for v in aspect.get("aspectValues") or []]
+                aspects[name] = [values[0]] if values else [fallback]
+            else:
+                aspects[name] = [fallback]
+        return aspects
 
     def create_or_update_listing(
         self,
@@ -148,7 +429,7 @@ class EbayClient:
                 "availability": {"shipToLocationAvailability": {"quantity": quantity}},
                 "condition": condition,
                 "product": {
-                    "title": title[:80],
+                    "title": _truncate_title(title),
                     "description": description_html,
                     "imageUrls": image_urls or [],
                     "aspects": aspects

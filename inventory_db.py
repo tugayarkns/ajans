@@ -129,8 +129,52 @@ def complete_supplier_task(order_ref):
         return cur.rowcount > 0
 
 
+def init_ebay_listing_skus_table():
+    """Kanonik SKU -> (eBay sitesi, o sitedeki eBay SKU'su) eslemesi.
+
+    eBay'in inventory_item kaydi pazarlar arasi paylasildigi icin her site
+    ayri bir SKU ile yayinlanir (bkz. panel.ebay_sku_for). Stok senkronunun
+    hangi sitede hangi SKU'yu okuyup yazacagini bilmesi icin esleme burada
+    tutulur.
+    """
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ebay_listing_skus (
+                sku TEXT NOT NULL,
+                marketplace_id TEXT NOT NULL,
+                ebay_sku TEXT NOT NULL,
+                PRIMARY KEY (sku, marketplace_id)
+            )
+            """
+        )
+
+
+def add_ebay_listing_sku(sku, marketplace_id, ebay_sku):
+    init_ebay_listing_skus_table()
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO ebay_listing_skus (sku, marketplace_id, ebay_sku) "
+            "VALUES (?, ?, ?) ON CONFLICT(sku, marketplace_id) DO UPDATE SET "
+            "ebay_sku = excluded.ebay_sku",
+            (sku, marketplace_id, ebay_sku),
+        )
+
+
+def get_ebay_listing_skus(sku):
+    """Bir SKU'nun yayinda oldugu siteleri dondurur: {marketplace_id: ebay_sku}."""
+    init_ebay_listing_skus_table()
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT marketplace_id, ebay_sku FROM ebay_listing_skus WHERE sku = ?",
+            (sku,),
+        ).fetchall()
+        return {r["marketplace_id"]: r["ebay_sku"] for r in rows}
+
+
 def upsert(sku, title, pool_qty, shopify_qty=None, ebay_qty=None):
     """Bir SKU'yu ekler/gunceller. Var olan alanlar verilmezse korunur."""
+    init_db()
     with closing(_connect()) as conn, conn:
         existing = conn.execute("SELECT * FROM inventory WHERE sku = ?", (sku,)).fetchone()
         if existing:
@@ -153,12 +197,14 @@ def upsert(sku, title, pool_qty, shopify_qty=None, ebay_qty=None):
 
 
 def get(sku):
+    init_db()
     with closing(_connect()) as conn:
         row = conn.execute("SELECT * FROM inventory WHERE sku = ?", (sku,)).fetchone()
         return dict(row) if row else None
 
 
 def get_all():
+    init_db()
     with closing(_connect()) as conn:
         rows = conn.execute("SELECT * FROM inventory ORDER BY sku").fetchall()
         return [dict(r) for r in rows]

@@ -26,6 +26,15 @@ ANALYTICS_REFRESH_SECONDS = 600
 ANALYTICS_WINDOW_DAYS = 7
 MAX_DISCOVERY_ITEMS_PER_REQUEST = 20
 
+# Sadece bu iki dosya /assets/logo/<dosya> uzerinden servis edilir (whitelist -
+# path traversal'a kapali, klasor listelemesi yok). Giris sayfasi da logoyu
+# gosterebilsin diye bu rota auth kontrolunden muaf tutulur (bkz. do_GET).
+_LOGO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo")
+_LOGO_FILES = {
+    "norvexget-icon.png": "image/png",
+    "norvexget-banner.png": "image/png",
+}
+
 # eBay Inventory API uzerinden yayinlanan SKU -> listingId eslemesi (bkz.
 # CLAUDE.md eBay bolumu). AJANS-001..004 Seller Hub UI'dan elle yayinlandigi
 # icin item ID'leri kodda/hicbir yerde kayitli degil; bu SKU'lar icin
@@ -37,9 +46,27 @@ _EBAY_ITEM_IDS = {
     "AJANS-008": "307118048374",
 }
 
+_SKU_PREFIX = "AJANS-"
+# eBay listeleri kasitli olarak Shopify'daki toplam stoktan daha kucuk, elle
+# secilmis satis miktarlariyla yayinlanir (bkz. CLAUDE.md eBay bolumu,
+# AJANS-001..004 icin 10/8/5/15 ornegi) - yeni urunler icin de ayni mantikla
+# kucuk bir varsayilan kullanilir.
+_DEFAULT_EBAY_QUANTITY = 10
+
+# Bir urunun satisa acilabilmesi icin gereken **gercek tedarikci gorseli**
+# sayisi. Az gorselli ilan satmiyor ve iade riskini yukseltiyor; eksigi yapay
+# zekayla tamamlama denendi ve geri alindi (bkz. product_image.py bas yorumu).
+# Bu sayiya ulasilamayan urun taslakta kalir (bkz. publish_dual_channel).
+MIN_PRODUCT_IMAGES = 6
+MAX_PRODUCT_IMAGES = 12
+# Panelde gosterilen son eleme sayisi (ajanin neyi neden elediginin gorunur
+# olmasi icin; kalici kayit degil, program kapaninca sifirlanir).
+MAX_REJECTED_SHOWN = 30
+
 _lock = threading.Lock()
 _events = []
 _pending = []
+_rejected = []
 _state = {
     "agents_loaded": 0,
     "automatic_mode": False,
@@ -79,18 +106,65 @@ def _save_pending():
         json.dump(_pending, f, ensure_ascii=False, indent=2)
 
 
+def _competitor_count(title):
+    """eBay'de bu urun icin kac rakip ilan var (bulunamazsa None)."""
+    try:
+        from ebay_client import EbayClient
+
+        return EbayClient().count_competing_listings(title)
+    except Exception:
+        return None
+
+
+def screen_candidate(item):
+    """Bir aday urunu urun secim politikasindan gecirir (bkz. trust_score.py).
+
+    Dondurur: (verdict_dict, enriched_item). `verdict_dict["blockers"]` doluysa
+    aday satisa uygun degildir. Bu kapi kasitli olarak **sunucu tarafinda**:
+    kesif botunun gonderdigi `score` degerine guvenmiyoruz, skoru burada
+    kendimiz hesapliyoruz - bot hatali/iyimser davransa bile magazaya iade
+    riski yuksek urun giremesin.
+    """
+    import trust_score
+
+    verdict = trust_score.evaluate(item, competitor_count=_competitor_count(item.get("title") or ""))
+    enriched = {
+        **item,
+        "score": verdict["score"],
+        "score_reason": " · ".join(verdict["reasons"]) or "Ek guven sinyali yok",
+        "blockers": verdict["blockers"],
+        "competitor_count": verdict["competitor_count"],
+    }
+    return verdict, enriched
+
+
 def add_pending_products(items):
     """Onay bekleyen yeni urun adaylarini panele ekler (orn. DSers'tan gelen adaylar).
 
-    Her aday, panele eklenmeden ONCE PRODUCT_AGENT'tan gecirilip nihai
-    baslik/aciklamasi uretilir (description_html eksikse). Boylece kullanici
-    panelde her zaman satisa hazir, son hali gordugu bir urunu onaylar —
-    onay sonrasi arka planda hicbir icerik uretimi/degisimi olmaz.
+    Once **urun secim politikasi** uygulanir (bkz. screen_candidate): iade
+    riski yuksek veya guven sinyali zayif adaylar kuyruga hic girmez, ayri
+    bir "elenenler" listesine sebebiyle yazilir. Gecen adaylar PRODUCT_AGENT'tan
+    gecirilip nihai baslik/aciklamasiyla kuyruga alinir; boylece kullanici
+    panelde her zaman satisa hazir, son halini gordugu bir urunu onaylar.
+
+    Dondurur: (kabul_edilenler, elenenler).
     """
-    prepared = []
+    prepared, rejected = [], []
     for item in items:
         if not item.get("id"):
             item = {**item, "id": uuid.uuid4().hex}
+
+        verdict, item = screen_candidate(item)
+        if verdict["blockers"]:
+            rejected.append({
+                "id": item["id"],
+                "title": item.get("title") or "(basliksiz)",
+                "score": verdict["score"],
+                "blockers": verdict["blockers"],
+                "time": datetime.now().isoformat(timespec="seconds"),
+            })
+            continue
+
         if not item.get("description_html"):
             title, description_html, needs_review = _generate_listing(item)
             item = {
@@ -99,13 +173,14 @@ def add_pending_products(items):
                 "description_html": description_html,
                 "needs_review": needs_review,
             }
-        if not item.get("image_urls") and item.get("image_url"):
-            item["image_urls"] = [item["image_url"]]
         prepared.append(item)
+
     with _lock:
         _pending.extend(prepared)
+        _rejected.extend(rejected)
+        del _rejected[:-MAX_REJECTED_SHOWN]
         _save_pending()
-    return prepared
+    return prepared, rejected
 
 
 def get_pending_product(product_id):
@@ -149,6 +224,7 @@ def _snapshot():
             "state": dict(_state),
             "events": list(reversed(_events)),
             "pending": list(_pending),
+            "rejected": list(reversed(_rejected)),
             "analytics": dict(_analytics),
             "links": _store_links(),
         }
@@ -211,6 +287,7 @@ def _refresh_analytics():
         ebay_stats = {"ok": False, "error": str(e), "window_days": ANALYTICS_WINDOW_DAYS}
 
     products = []
+    products_error = None
     try:
         import inventory_db
 
@@ -228,8 +305,8 @@ def _refresh_analytics():
                 "shopify_url": _shopify_product_url(shopify_ids.get(row.get("title"))),
                 "ebay_url": _ebay_item_url(row.get("sku")),
             })
-    except Exception:
-        pass
+    except Exception as e:
+        products_error = str(e)
 
     combined_revenue = (shopify_stats.get("revenue") or 0) + (ebay_stats.get("revenue") or 0)
     combined_count = (shopify_stats.get("order_count") or 0) + (ebay_stats.get("order_count") or 0)
@@ -237,11 +314,13 @@ def _refresh_analytics():
     with _lock:
         prev_shopify_ok = _analytics.get("shopify", {}).get("ok")
         prev_ebay_ok = _analytics.get("ebay", {}).get("ok")
+        prev_products_ok = _analytics.get("products_ok")
         _analytics = {
             "shopify": shopify_stats,
             "ebay": ebay_stats,
             "combined": {"order_count": combined_count, "revenue": combined_revenue},
             "products": products,
+            "products_ok": products_error is None,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "window_days": ANALYTICS_WINDOW_DAYS,
         }
@@ -256,6 +335,11 @@ def _refresh_analytics():
         msg = "eBay analitik baglantisi kuruldu" if ebay_stats.get("ok") \
             else f"eBay analitik baglantisi koptu: {ebay_stats.get('error')}"
         log_event("analitik", msg, status)
+    if prev_products_ok is not None and prev_products_ok != (products_error is None):
+        status = "success" if products_error is None else "error"
+        msg = "Stok tablosu okuma baglantisi kuruldu" if products_error is None \
+            else f"Stok tablosu okunamadi: {products_error}"
+        log_event("stok", msg, status)
 
 
 def _analytics_loop():
@@ -286,7 +370,7 @@ _LOGIN_HTML = """<!doctype html>
     display:flex; align-items:center; justify-content:center; padding:20px;
   }
   .box { background:var(--panel); border:1px solid var(--panel-border); border-radius:14px; padding:32px; width:100%; max-width:340px; }
-  .mark { width:40px; height:40px; border-radius:10px; background:linear-gradient(135deg, var(--accent), #a78bfa); display:flex; align-items:center; justify-content:center; font-weight:700; color:#0b0d12; margin-bottom:16px; }
+  .mark { width:40px; height:40px; border-radius:10px; object-fit:cover; display:block; margin-bottom:16px; }
   h1 { font-size:17px; margin:0 0 20px; font-weight:600; }
   label { display:block; font-size:12px; color:var(--muted); margin:14px 0 6px; font-weight:600; }
   input { width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--panel-border); background:#0f1118; color:var(--text); font-size:14px; }
@@ -298,7 +382,7 @@ _LOGIN_HTML = """<!doctype html>
 </head>
 <body>
   <form class="box" id="login-form">
-    <div class="mark">A</div>
+    <img class="mark" src="/assets/logo/norvexget-icon.png" alt="NorvexGet">
     <h1>AJANS Panel'e giris yap</h1>
     <label for="email">E-posta</label>
     <input id="email" type="email" autocomplete="username" required>
@@ -368,10 +452,7 @@ _PAGE_HTML = """<!doctype html>
   .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; flex-wrap:wrap; gap:12px; }
   .brand { display:flex; align-items:center; gap:12px; }
   .brand .mark {
-    width:36px; height:36px; border-radius:10px;
-    background:linear-gradient(135deg, var(--accent), #a78bfa);
-    display:flex; align-items:center; justify-content:center;
-    font-weight:700; font-size:15px; color:#0b0d12;
+    width:36px; height:36px; border-radius:10px; object-fit:cover; display:block;
   }
   .brand h1 { font-size:18px; margin:0; font-weight:600; letter-spacing:.2px; }
   .brand .sub { font-size:12px; color:var(--muted); margin-top:2px; }
@@ -419,6 +500,8 @@ _PAGE_HTML = """<!doctype html>
   .pcard .body { padding:12px 14px 14px; display:flex; flex-direction:column; gap:6px; flex:1; }
   .score-badge { align-self:flex-start; font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; }
   .pcard .title { font-size:13px; line-height:1.35; font-weight:600; }
+  .pcard .trust { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; color:var(--muted); }
+  .pcard .trust-why { font-size:10.5px; line-height:1.45; color:var(--green); }
   .pcard .price { font-size:13px; color:var(--text); font-weight:700; }
   .pcard .cost { font-size:11px; color:var(--muted); }
   .pcard .margin { font-size:12px; font-weight:700; display:flex; align-items:center; gap:6px; margin-top:2px; }
@@ -457,7 +540,7 @@ _PAGE_HTML = """<!doctype html>
 <body>
   <div class="topbar">
     <div class="brand">
-      <div class="mark">A</div>
+      <img class="mark" src="/assets/logo/norvexget-icon.png" alt="NorvexGet">
       <div>
         <h1>AJANS Panel</h1>
         <div class="sub">Multi-agent siparis yonetimi &middot; canli izleme</div>
@@ -478,6 +561,17 @@ _PAGE_HTML = """<!doctype html>
       <span class="count" id="pending-count"></span>
     </div>
     <div class="pending-grid" id="pending-grid"></div>
+  </div>
+
+  <div class="panel-section" id="rejected-section" style="margin-bottom:28px; display:none;">
+    <div class="head">
+      <h2>Elenen Adaylar (urun secim politikasi)</h2>
+      <span class="count" id="rejected-count"></span>
+    </div>
+    <table>
+      <thead><tr><th>Zaman</th><th>Urun</th><th>Skor</th><th>Eleme sebebi</th></tr></thead>
+      <tbody id="rejected-rows"></tbody>
+    </table>
   </div>
 
   <div class="panel-section" id="tasks-section" style="margin-bottom:28px; display:none; border-color:var(--red);">
@@ -656,7 +750,7 @@ async function refresh() {
       const profit = sell - totalCost;
       const marginPct = sell > 0 ? (profit / sell * 100) : 0;
       const marginColor = marginPct >= 40 ? 'var(--green)' : marginPct >= 20 ? 'var(--amber)' : 'var(--red)';
-      const images = (p.image_urls && p.image_urls.length) ? p.image_urls : (p.image_url ? [p.image_url] : []);
+      const images = p.image_urls || [];
       const descText = (p.description_html || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();
       const cardId = 'p_' + String(p.id).replace(/[^a-zA-Z0-9_-]/g, '_');
       const thumbs = images.slice(0, 6).map((url, i) => `<img src="${escapeHtml(url)}" referrerpolicy="no-referrer" class="${i===0?'active':''}" onclick="document.getElementById('${cardId}_main').src=this.src; this.parentElement.querySelectorAll('img').forEach(im=>im.classList.remove('active')); this.classList.add('active');">`).join('');
@@ -671,6 +765,13 @@ async function refresh() {
           ${hasScore ? `<div class="score-badge" style="background:color-mix(in srgb, ${scoreColor} 15%, transparent); color:${scoreColor}" title="${escapeHtml(p.score_reason || '')}">Guven skoru: ${p.score}/100</div>` : ''}
           ${p.needs_review ? '<div class="desc" style="color:var(--amber); border-color:var(--amber);">⚠️ PRODUCT_AGENT bu urunde bir sorun isaretledi (fiyat/aciklama eksik olabilir) — onaylamadan once dikkatlice kontrol edin.</div>' : ''}
           <div class="title">${escapeHtml(p.title)}</div>
+          <div class="trust">
+            <span title="Tedarikci puani">⭐ ${p.rating != null ? p.rating : '?'}</span>
+            <span title="Tedarikcideki toplam satis">📦 ${p.orders != null ? p.orders : '?'} satis</span>
+            <span title="Gercek tedarikci fotografi">🖼️ ${images.length} foto</span>
+            <span title="eBay'deki rakip ilan sayisi">🏷️ ${p.competitor_count != null ? p.competitor_count + ' rakip' : 'rakip ?'}</span>
+          </div>
+          ${p.score_reason ? `<div class="trust-why">${escapeHtml(p.score_reason)}</div>` : ''}
           <div class="price">Satis: ${cur} ${sell.toFixed(2)}${p.sell_price_max && p.sell_price_max !== sell ? '–' + p.sell_price_max.toFixed(2) : ''}</div>
           <div class="cost">Maliyet (urun+kargo): ${cur} ${totalCost.toFixed(2)} (urun ${cur} ${(p.cost_min || 0).toFixed(2)} + kargo ${cur} ${shipping.toFixed(2)})</div>
           <div class="margin" style="color:${marginColor}">
@@ -690,6 +791,19 @@ async function refresh() {
     `;
     }).join('') : '<div class="empty" style="grid-column:1/-1;">Onay bekleyen urun yok.</div>';
     }
+
+    const rejected = data.rejected || [];
+    document.getElementById('rejected-section').style.display = rejected.length ? '' : 'none';
+    document.getElementById('rejected-count').textContent = rejected.length ? `${rejected.length} aday elendi` : '';
+    document.getElementById('rejected-rows').innerHTML = rejected.map(r => `
+      <tr>
+        <td class="time">${timeAgo(r.time)}</td>
+        <td>${escapeHtml(r.title)}</td>
+        <td>${r.score}/100</td>
+        <td style="color:var(--red)">${escapeHtml((r.blockers || []).join(' · '))}</td>
+      </tr>
+    `).join('');
+
     const countEl = document.getElementById('event-count');
     countEl.textContent = data.events.length ? `${data.events.length} olay` : '';
     document.getElementById('rows').innerHTML = data.events.length ? data.events.map(e => `
@@ -780,34 +894,237 @@ def _generate_listing(product):
         )
         result = next((b.text for b in response.content if b.type == "text"), "")
     except Exception:
-        return fallback_title, f"<p>{fallback_title}</p>", False
+        return fallback_title, f"<p>{fallback_title}</p>", True
 
     return parse_agent_listing(result, fallback_title)
 
 
-def _publish_product(product):
-    """Onaylanan bir aday urunu gercek Shopify magazasina, canli (active) olarak ekler."""
+def _next_sku():
+    """Var olan en buyuk AJANS-NNN SKU'sunun bir fazlasini dondurur (yoksa AJANS-001).
+
+    Capraz-kanal stok eslestirmesi (inventory_db) SKU'ya dayandigi icin yeni
+    yayinlanan her urun, Shopify ve eBay tarafinda ayni SKU'yu tasimali.
+    """
+    import inventory_db
+
+    max_n = 0
+    known_skus = {row.get("sku") for row in inventory_db.get_all()} | set(_EBAY_ITEM_IDS)
+    for sku in known_skus:
+        if sku and sku.startswith(_SKU_PREFIX):
+            suffix = sku[len(_SKU_PREFIX):]
+            if suffix.isdigit():
+                max_n = max(max_n, int(suffix))
+    return f"{_SKU_PREFIX}{max_n + 1:03d}"
+
+
+def _ebay_marketplaces():
+    """Yayin yapilacak eBay siteleri (bkz. CLAUDE.md 'Dual-channel publish').
+
+    EBAY_MARKETPLACES virgullu bir liste olarak .env'de tanimlanir (orn.
+    "EBAY_AT,EBAY_US"); verilmezse tek siteli eski davranisa (EBAY_MARKETPLACE_ID,
+    yoksa EBAY_AT) duser.
+    """
+    raw = os.environ.get("EBAY_MARKETPLACES") or os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_AT")
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def ebay_sku_for(sku, marketplace_id):
+    """Kanonik SKU'nun bir eBay sitesindeki karsiligi (orn. AJANS-009 -> AJANS-009-AT).
+
+    eBay'in /inventory_item/{sku} kaydi, Content-Language header'ina ragmen
+    TUM pazarlar arasinda paylasilir: ayni SKU iki siteye yayinlanirsa
+    baslik/aciklama/aspect'ler tek bir kayda yazilir ve en son yazilan dil
+    her iki sitede de gorunur (orn. ABD alicisina Almanca "Produktart").
+    Site basina ayri SKU kullanmak bu karismayi yapisal olarak imkansiz kilar.
+    """
+    return f"{sku}-{marketplace_id.removeprefix('EBAY_')}"
+
+
+def html_to_text(html):
+    """Kategori aramasinda kullanilmak uzere HTML aciklamayi duz metne cevirir."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
+
+
+def _publish_to_ebay(sku, title, description_html, price_eur, marketplace_id, quantity=_DEFAULT_EBAY_QUANTITY, image_urls=None):
+    """Bir urunu ayni SKU ile belirli bir eBay sitesinde yayinlar (bkz. CLAUDE.md eBay bolumu).
+
+    `price_eur`, Shopify magazasinin fiyatlandirma para birimidir (EUR);
+    hedef site EUR disinda bir para birimi kullaniyorsa
+    EbayClient.convert_price_from_eur() ile o para birimine cevrilir -
+    aksi halde ayni sayisal deger baska bir para biriminde yayinlanip kur
+    farki kadar (~%8-10) karsiliksiz kayba yol acardi.
+
+    Kategori, urun basligi + aciklamasindan eBay'in taksonomi API'siyle
+    otomatik bulunur (urun turleri cok farkli kategorilere dustugu icin sabit
+    tek kategori kullanilmiyor); o kategorinin zorunlu tuttugu aspect'ler de
+    otomatik dolduruluyor (bkz. EbayClient.suggest_category /
+    get_required_aspects). Hesaba ozel policy ID'leri ve merchant location,
+    her site icin ayri namespace'li .env degiskenlerinden okunur (orn.
+    EBAY_AT_..., EBAY_US_...).
+
+    eBay'e gonderilen SKU, kanonik SKU'nun site son ekli halidir (bkz.
+    ebay_sku_for) - eBay'in inventory_item kaydi pazarlar arasi paylasildigi
+    icin ayni SKU iki siteye yayinlanirsa aspect'ler son yazilan dilde
+    kaliyor. Hata durumunda dogrudan raise eder - loglamak cagiran tarafin
+    sorumlulugundadir, boylece Shopify'a eklenmis bir urun eBay hatasi
+    yuzunden geri alinmaz.
+    """
+    from ebay_client import EbayClient
+
+    ebay = EbayClient(marketplace_id=marketplace_id)
+    category_id = ebay.suggest_category(title, html_to_text(description_html))
+    if not category_id:
+        raise RuntimeError(f"'{title}' icin {marketplace_id} kategorisi bulunamadi")
+    aspects = ebay.get_required_aspects(category_id)
+    prefix = f"EBAY_{marketplace_id.removeprefix('EBAY_')}_"
+    return ebay.create_or_update_listing(
+        sku=ebay_sku_for(sku, marketplace_id),
+        title=title,
+        description_html=description_html,
+        price=ebay.convert_price_from_eur(price_eur),
+        quantity=quantity,
+        category_id=category_id,
+        fulfillment_policy_id=os.environ[f"{prefix}FULFILLMENT_POLICY_ID"],
+        payment_policy_id=os.environ[f"{prefix}PAYMENT_POLICY_ID"],
+        return_policy_id=os.environ[f"{prefix}RETURN_POLICY_ID"],
+        merchant_location_key=os.environ[f"{prefix}MERCHANT_LOCATION_KEY"],
+        image_urls=image_urls or [],
+        aspects=aspects or None,
+    )
+
+
+def sync_ebay_listing(shopify_client, shopify_product, description_html, price_eur, image_urls=None):
+    """Zaten Shopify'da olusturulmus bir urunu her yapilandirilmis eBay
+    sitesinde (bkz. _ebay_marketplaces) yayinlar.
+
+    `price_eur` Shopify'daki (EUR) fiyattir; her site kendi para birimine
+    _publish_to_ebay icinde otomatik cevirir (bkz. EbayClient.convert_price_from_eur).
+
+    Yeni bir kanonik SKU uretir, Shopify variant'ina yazar, sonra her site
+    icin site-son-ekli SKU'suyla (bkz. ebay_sku_for) ayri ayri yayinlamayi
+    dener ve basarili olanlari inventory_db'ye kaydeder. Bir sitedeki hata
+    digerlerini engellemez, sadece log_event ile kirmizi bir olay olarak
+    gorunur kilinir (bkz. main.py list_products'taki gorsel-uretim hata
+    toleransiyla ayni desen). En az bir sitede basarili olunursa kanonik
+    SKU'yu, hicbirinde olunmazsa None dondurur.
+    """
+    import inventory_db
+
+    title = shopify_product.get("title", "")
+    sku = _next_sku()
+    variant_id = (shopify_product.get("variants") or [{}])[0].get("id")
+    if variant_id:
+        try:
+            shopify_client.update_variant_sku(variant_id, sku)
+        except Exception as e:
+            log_event("urun", f"'{title[:60]}' SKU Shopify'a yazilamadi: {e}", "error")
+            return None
+
+    published = False
+    for marketplace_id in _ebay_marketplaces():
+        site_sku = ebay_sku_for(sku, marketplace_id)
+        try:
+            _publish_to_ebay(sku, title, description_html, price_eur, marketplace_id, image_urls=image_urls)
+            inventory_db.add_ebay_listing_sku(sku, marketplace_id, site_sku)
+            log_event("urun", f"'{title[:60]}' {marketplace_id}'e yayinlandi (SKU: {site_sku})", "success")
+            published = True
+        except Exception as e:
+            log_event("urun", f"'{title[:60]}' {marketplace_id}'e yayinlanamadi: {e}", "error")
+
+    if not published:
+        return None
+
+    inventory_db.upsert(
+        sku, title, _DEFAULT_EBAY_QUANTITY,
+        shopify_qty=None, ebay_qty=_DEFAULT_EBAY_QUANTITY,
+    )
+    return sku
+
+
+def attach_product_images(shopify_client, product_id, title, supplier_image_urls):
+    """Tedarikcinin **gercek** urun gorsellerini Shopify urunune ekler.
+
+    Yapay zeka gorseli uretmez ve eksigi tamamlamaz. Bir zamanlar
+    tamamliyordu (`upload_product_images`); kaldirildi cunku uretilen gorsel
+    musteriye gidecek gercek urunu gostermiyordu ve iade riskini yukseltiyordu
+    (bkz. product_image.py bas yorumu). Yeterli gercek gorsel yoksa dogru
+    davranis urunu yayinlamamaktir — bkz. publish_dual_channel.
+
+    Dondurulen URL'ler Shopify'in kendi CDN adresleridir; eBay'e de bunlar
+    gonderilir cunku tedarikcinin (orn. AliExpress) CDN'i eBay tarafindan
+    cekilemeyebiliyor, Shopify'a yuklenmis gorsel ise her zaman erisilebilir.
+    Hicbir asama raise etmez; her hata kirmizi bir `urun` olayi olur.
+    """
+    hosted_urls = []
+    for url in (supplier_image_urls or [])[:MAX_PRODUCT_IMAGES]:
+        try:
+            uploaded = shopify_client.add_product_image_from_url(product_id, url)
+            src = (uploaded or {}).get("src")
+            hosted_urls.append(src or url)
+        except Exception as e:
+            log_event("urun", f"'{title[:40]}' gorsel eklenemedi: {e}", "error")
+    return hosted_urls
+
+
+def publish_dual_channel(title, description_html, price, image_urls=None):
+    """Bir urunu Shopify'da olusturup ayni SKU ile eBay'de de yayinlamaya calisir.
+
+    **Gorsel kapisi:** urun ancak MIN_PRODUCT_IMAGES kadar *gercek* tedarikci
+    gorseli yuklenebildiyse satisa (`active`) acilir. Daha azi varsa urun
+    Shopify'da `draft` olarak kalir (musteri gormez), eBay'e hic gonderilmez
+    ve kirmizi bir `urun` olayi dusurulur. Sebep: az/alakasiz gorselli ilan
+    hem satmiyor hem de iade riskini yukseltiyor; eksigi yapay zekayla
+    kapatmak ise daha kotusuydu (bkz. attach_product_images).
+
+    Shopify olusturma basarisizsa raise eder (cagiran taraf yakalar). eBay
+    tarafi sync_ebay_listing() araciligiyla hata-toleransli calisir.
+    Dondurur: (shopify_product, ebay_sku_or_None).
+    """
     from shopify_client import ShopifyClient
 
     shopify = ShopifyClient()
+    created = shopify.create_product(
+        title=title, description_html=description_html, price=price, status="draft",
+    )
+
+    hosted_urls = attach_product_images(shopify, created["id"], title, image_urls)
+
+    if len(hosted_urls) < MIN_PRODUCT_IMAGES:
+        log_event(
+            "urun",
+            f"'{title[:50]}' yayinlanmadi: yalnizca {len(hosted_urls)} gercek gorsel "
+            f"var (gereken {MIN_PRODUCT_IMAGES}). Urun Shopify'da taslak olarak duruyor.",
+            "error",
+        )
+        return created, None
+
+    shopify.set_product_status(created["id"], "active")
+    created["status"] = "active"
+
+    ebay_sku = sync_ebay_listing(
+        shopify, created, description_html, price, image_urls=hosted_urls,
+    )
+    return created, ebay_sku
+
+
+def _publish_product(product):
+    """Onaylanan bir aday urunu gercek Shopify magazasina ekler.
+
+    Yeterli gercek gorsel varsa canli (`active`), yoksa taslak olarak kalir
+    ve eBay'e gitmez (bkz. publish_dual_channel gorsel kapisi). Ayni SKU ile
+    eBay'de de yayinlamayi dener.
+    """
     if product.get("description_html"):
         title, description_html = product["title"], product["description_html"]
     else:
         title, description_html, _ = _generate_listing(product)
-    created = shopify.create_product(
+
+    created, _ = publish_dual_channel(
         title=title,
         description_html=description_html,
         price=product["sell_price_min"],
+        image_urls=product.get("image_urls") or [],
     )
-
-    image_urls = product.get("image_urls") or (
-        [product["image_url"]] if product.get("image_url") else []
-    )
-    for url in image_urls[:8]:
-        try:
-            shopify.add_product_image_from_url(created["id"], url)
-        except Exception:
-            continue
     return created
 
 
@@ -841,6 +1158,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_redirect("/")
                 return
             self._send(200, _LOGIN_HTML.encode("utf-8"), "text/html; charset=utf-8")
+            return
+
+        if self.path.startswith("/assets/logo/"):
+            self._send_logo_asset(self.path[len("/assets/logo/"):])
             return
 
         if not self._current_user():
@@ -955,13 +1276,25 @@ class _Handler(BaseHTTPRequestHandler):
 
         items = items[:MAX_DISCOVERY_ITEMS_PER_REQUEST]
         try:
-            prepared = add_pending_products(items)
+            prepared, rejected = add_pending_products(items)
         except Exception as e:
             self._send(500, str(e).encode("utf-8", errors="replace"), "text/plain; charset=utf-8")
             return
 
-        log_event("kesif", f"{len(prepared)} yeni urun adayi eklendi", "success")
-        body = json.dumps({"ok": True, "added": len(prepared)}, ensure_ascii=False).encode("utf-8")
+        if prepared:
+            log_event("kesif", f"{len(prepared)} yeni urun adayi eklendi", "success")
+        if rejected:
+            log_event(
+                "kesif",
+                f"{len(rejected)} aday urun secim politikasina takildi: "
+                + "; ".join(f"{r['title'][:30]} ({r['blockers'][0]})" for r in rejected[:3]),
+                "error",
+            )
+        body = json.dumps({
+            "ok": True,
+            "added": len(prepared),
+            "rejected": [{"title": r["title"], "blockers": r["blockers"]} for r in rejected],
+        }, ensure_ascii=False).encode("utf-8")
         self._send(200, body, "application/json; charset=utf-8")
 
     def _handle_login(self):
@@ -1004,7 +1337,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, b"Gecersiz istek", "text/plain; charset=utf-8")
             return
 
-        if not inventory_db.complete_supplier_task(order_ref):
+        try:
+            done = inventory_db.complete_supplier_task(order_ref)
+        except Exception as e:
+            self._send(500, str(e).encode("utf-8", errors="replace"), "text/plain; charset=utf-8")
+            return
+
+        if not done:
             self._send(
                 404,
                 b"Gorev bulunamadi (zaten tamamlanmis olabilir)",
@@ -1019,6 +1358,24 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_logo_asset(self, filename):
+        content_type = _LOGO_FILES.get(filename)
+        if not content_type:
+            self._send(404, b"Not Found", "text/plain; charset=utf-8")
+            return
+        try:
+            with open(os.path.join(_LOGO_DIR, filename), "rb") as f:
+                body = f.read()
+        except OSError:
+            self._send(404, b"Not Found", "text/plain; charset=utf-8")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=86400")
         self.end_headers()
         self.wfile.write(body)
 

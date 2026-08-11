@@ -93,10 +93,15 @@ class ShopifyClient:
         return result.get("shop", {}).get("name") or self.domain
 
     def get_active_products(self):
-        """Magazada aktif/yayinda olan urunleri basit bir listede dondurur."""
+        """Magazada aktif/yayinda olan urunleri basit bir listede dondurur.
+
+        `image_count`, urunun kac gorseli oldugunu verir; main.py'nin
+        `gorseller` komutu tek gorselle kalmis urunleri bununla bulur.
+        """
         result = self._request(
             "GET",
-            "/products.json?status=active&limit=250&fields=id,handle,title,body_html,variants",
+            "/products.json?status=active&limit=250"
+            "&fields=id,handle,title,body_html,variants,images",
         )
         products = []
         for p in result.get("products", []):
@@ -110,6 +115,8 @@ class ShopifyClient:
                 "id": p.get("id"),
                 "handle": p.get("handle"),
                 "title": p["title"],
+                "body_html": p.get("body_html") or "",
+                "image_count": len(p.get("images") or []),
                 "price_min": min(prices) if prices else None,
                 "price_max": max(prices) if prices else None,
                 "inventory_quantity": sum(quantities) if quantities else None,
@@ -151,27 +158,47 @@ class ShopifyClient:
         self._request("PUT", f"/variants/{variant_id}.json", body)
 
     def get_product_quantity(self, sku):
-        """Belirli bir SKU'yu tasiyan variant'in stok miktarini dondurur (yoksa None)."""
+        """Belirli bir SKU'yu tasiyan variant'in stok miktarini dondurur (yoksa None).
+
+        Stok takibi kapali variant'larda (`inventory_management` bos) Shopify
+        `inventory_quantity` alanini 0 olarak dondurur ama urun yine de
+        sinirsiz satilabilir - bu 0'i gercek stok saymak, stok senkronunun
+        "hepsi satildi" diye eBay kotasini sifirlamasina yol acardi. Bu yuzden
+        takip kapaliysa "bilinmiyor" anlaminda None donulur.
+        """
         result = self._request(
             "GET", "/products.json?status=active&limit=250&fields=variants"
         )
         for p in result.get("products", []):
             for v in p.get("variants", []):
                 if v.get("sku") == sku:
+                    if not v.get("inventory_management"):
+                        return None
                     return v.get("inventory_quantity")
         return None
 
-    def create_product(self, title, description_html, price):
+    def create_product(self, title, description_html, price, status="active"):
+        """Yeni urun olusturur.
+
+        `status="draft"` ile olusturulan urun magazada gorunmez; yeterli
+        gercek gorseli olmayan urunler boyle yayinlanir (bkz. panel.py
+        publish_dual_channel ve MIN_PRODUCT_IMAGES).
+        """
         body = {
             "product": {
                 "title": title,
                 "body_html": description_html,
-                "status": "active",
+                "status": status,
                 "variants": [{"price": str(price)}],
             }
         }
         result = self._request("POST", "/products.json", body)
         return result.get("product")
+
+    def set_product_status(self, product_id, status):
+        """Urunu 'active' (satista) / 'draft' (gizli) yapar. Urunu silmez."""
+        body = {"product": {"id": product_id, "status": status}}
+        self._request("PUT", f"/products/{product_id}.json", body)
 
     def add_product_image(self, product_id, base64_image):
         body = {"image": {"attachment": base64_image}}
@@ -183,6 +210,15 @@ class ShopifyClient:
         body = {"image": {"src": image_url}}
         result = self._request("POST", f"/products/{product_id}/images.json", body)
         return result.get("image")
+
+    def get_product_images(self, product_id):
+        """Urunun gorsellerini dondurur (id, src, created_at, position)."""
+        result = self._request("GET", f"/products/{product_id}/images.json")
+        return result.get("images", [])
+
+    def delete_product_image(self, product_id, image_id):
+        """Tek bir urun gorselini siler. Geri alinamaz - cagirmadan once listele."""
+        self._request("DELETE", f"/products/{product_id}/images/{image_id}.json")
 
     @staticmethod
     def format_order_for_agent(order):

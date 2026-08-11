@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 import inventory_db
 import panel
 import panel_auth
-import product_image
 from ebay_client import EbayClient
 from shopify_client import ShopifyClient
 
@@ -271,13 +270,24 @@ Başla!
         Inventory API bu SKU'lari goremiyor (get_listing_quantity None doner,
         bkz. CLAUDE.md); bu SKU'lar icin senkron sessizce atlanir, Inventory
         API'ye tasindiklarinda otomatik calismaya baslar.
+
+        Bir SKU birden fazla eBay sitesinde yayinda olabilir (bkz.
+        panel.ebay_sku_for / inventory_db.ebay_listing_skus); her site kendi
+        SKU'suyla ayri ayri okunup yazilir. Esleme kaydi olmayan eski
+        urunler icin SKU'nun kendisi varsayilan tek site uzerinden kullanilir.
         """
         try:
             shopify = ShopifyClient()
-            ebay = EbayClient()
         except KeyError as e:
             print(f"❌ Stok senkronu icin ayarlar eksik: {e} .env dosyasinda tanimli degil\n")
             return
+
+        ebay_clients = {}
+
+        def _ebay_client(marketplace_id):
+            if marketplace_id not in ebay_clients:
+                ebay_clients[marketplace_id] = EbayClient(marketplace_id=marketplace_id)
+            return ebay_clients[marketplace_id]
 
         print("\n🔄 Kanallar arasi stok senkronu kontrol ediliyor...\n")
         for row in inventory_db.get_all():
@@ -287,11 +297,27 @@ Başla!
             except Exception as e:
                 print(f"⚠️ {sku}: Shopify stok kontrolu basarisiz: {e}\n")
                 fresh_shopify_qty = None
+
             try:
-                fresh_ebay_qty = ebay.get_listing_quantity(sku)
+                site_skus = inventory_db.get_ebay_listing_skus(sku)
             except Exception as e:
-                print(f"⚠️ {sku}: eBay stok kontrolu basarisiz: {e}\n")
-                fresh_ebay_qty = None
+                print(f"⚠️ {sku}: eBay SKU eslemesi okunamadi: {e}\n")
+                site_skus = {}
+            if not site_skus:
+                site_skus = {os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_AT"): sku}
+
+            site_quantities = {}
+            for marketplace_id, site_sku in site_skus.items():
+                try:
+                    site_quantities[marketplace_id] = _ebay_client(
+                        marketplace_id
+                    ).get_listing_quantity(site_sku)
+                except Exception as e:
+                    print(f"⚠️ {site_sku} ({marketplace_id}): eBay stok kontrolu basarisiz: {e}\n")
+                    site_quantities[marketplace_id] = None
+
+            known_quantities = [q for q in site_quantities.values() if q is not None]
+            fresh_ebay_qty = min(known_quantities) if known_quantities else None
 
             if fresh_shopify_qty is None and fresh_ebay_qty is None:
                 continue
@@ -304,26 +330,42 @@ Başla!
                 and fresh_shopify_qty < last_shopify_qty
             ):
                 sold_on_shopify = last_shopify_qty - fresh_shopify_qty
-                new_ebay_qty = max(0, fresh_ebay_qty - sold_on_shopify)
-                if new_ebay_qty != fresh_ebay_qty:
+                for marketplace_id, site_qty in site_quantities.items():
+                    if site_qty is None:
+                        continue
+                    new_ebay_qty = max(0, site_qty - sold_on_shopify)
+                    if new_ebay_qty == site_qty:
+                        continue
+                    site_sku = site_skus[marketplace_id]
                     try:
-                        ebay.update_quantity(sku, new_ebay_qty)
-                        fresh_ebay_qty = new_ebay_qty
+                        _ebay_client(marketplace_id).update_quantity(site_sku, new_ebay_qty)
+                        site_quantities[marketplace_id] = new_ebay_qty
                         msg = (
-                            f"{sku}: Shopify'da {sold_on_shopify} adet satildi, "
-                            f"eBay kotasi {new_ebay_qty}'e dusuruldu"
+                            f"{site_sku} ({marketplace_id}): Shopify'da {sold_on_shopify} "
+                            f"adet satildi, eBay kotasi {new_ebay_qty}'e dusuruldu"
                         )
                         print(f"✅ {msg}\n")
                         panel.log_event("stok", msg, "success")
                     except Exception as e:
-                        print(f"⚠️ {sku}: eBay stok guncellenemedi: {e}\n")
-                        panel.log_event("stok", f"{sku}: eBay stok guncellenemedi: {e}", "error")
+                        print(f"⚠️ {site_sku} ({marketplace_id}): eBay stok guncellenemedi: {e}\n")
+                        panel.log_event(
+                            "stok",
+                            f"{site_sku} ({marketplace_id}): eBay stok guncellenemedi: {e}",
+                            "error",
+                        )
+                updated = [q for q in site_quantities.values() if q is not None]
+                fresh_ebay_qty = min(updated) if updated else fresh_ebay_qty
 
             pool_qty = fresh_ebay_qty if fresh_ebay_qty is not None else row["pool_qty"]
-            inventory_db.upsert(
-                sku, row["title"], pool_qty,
-                shopify_qty=fresh_shopify_qty, ebay_qty=fresh_ebay_qty,
-            )
+            try:
+                inventory_db.upsert(
+                    sku, row["title"], pool_qty,
+                    shopify_qty=fresh_shopify_qty, ebay_qty=fresh_ebay_qty,
+                )
+            except Exception as e:
+                print(f"⚠️ {sku}: stok veritabanina yazilamadi: {e}\n")
+                panel.log_event("stok", f"{sku}: stok veritabanina yazilamadi: {e}", "error")
+                continue
 
     def list_products(self):
         if "PRODUCT_AGENT" not in self.agents:
@@ -380,30 +422,160 @@ Başla!
                     "olarak işaretlendi (yine de ekleniyor, elle gözden geçirin)\n"
                 )
 
+            gorseller = item.get("image_urls") or []
+            if len(gorseller) < panel.MIN_PRODUCT_IMAGES:
+                mesaj = (
+                    f"{item['name']}: kataloğda yalnızca {len(gorseller)} gerçek "
+                    f"görsel var (gereken {panel.MIN_PRODUCT_IMAGES}) — yayınlanmadı"
+                )
+                panel.log_event("urun", mesaj, "error")
+                print(f"⛔ {mesaj}\n")
+                continue
+
             try:
-                product = shopify.create_product(
+                product, ebay_sku = panel.publish_dual_channel(
                     title=item["name"],
                     description_html=description_html,
                     price=item.get("sell_price", 0),
+                    image_urls=gorseller,
                 )
-                print(f"✅ Shopify'a eklendi: {product.get('title')} (ID: {product.get('id')})\n")
-                msg = f"{product.get('title')} eklendi (ID: {product.get('id')})"
-                panel.log_event("urun", msg, "success")
             except Exception as e:
                 panel.log_event("urun", f"{item['name']} eklenemedi: {e}", "error")
                 print(f"❌ '{item['name']}' Shopify'a eklenemedi: {e}\n")
                 continue
 
-            print("🎨 Yapay zeka manken görseli üretiliyor...")
-            try:
-                image_data = product_image.generate_model_photo(
-                    item["name"], item.get("description", "")
-                )
-                shopify.add_product_image(product["id"], image_data)
-                print("✅ Görsel Shopify'a yüklendi\n")
-            except Exception as e:
-                panel.log_event("urun", f"{item['name']} görseli üretilemedi: {e}", "error")
-                print(f"⚠️ Görsel üretilemedi/yüklenemedi (ürün yine de eklendi): {e}\n")
+            print(f"✅ Shopify'a eklendi: {product.get('title')} (ID: {product.get('id')})")
+            panel.log_event(
+                "urun", f"{product.get('title')} eklendi (ID: {product.get('id')})", "success"
+            )
+            if ebay_sku:
+                print(f"✅ eBay'e de yayınlandı (SKU: {ebay_sku})\n")
+            else:
+                print("⚠️ eBay yayını yapılamadı (ayrıntı panelde kırmızı olayda)\n")
+
+    def backfill_product_images(self):
+        """Gorseli eksik kalmis urunleri **raporlar** (otomatik tamamlamaz).
+
+        Eskiden eksigi yapay zeka gorseliyle dolduruyordu; kaldirildi cunku
+        uretilen gorsel gercek urunu gostermiyordu ve iade riskini
+        yukseltiyordu (bkz. product_image.py bas yorumu). Gercek fotograf
+        yalnizca tedarikciden gelebilir ve o veriye ancak DSers'e erisebilen
+        bir Claude Code oturumu ulasabilir - bu yuzden burada sadece hangi
+        urunun kac gorseli eksik oldugu listelenir.
+        """
+        try:
+            products = ShopifyClient().get_active_products()
+        except Exception as e:
+            print(f"❌ Shopify'a bağlanılamadı: {e}\n")
+            return
+
+        eksik = [
+            p for p in products
+            if (p.get("image_count") or 0) < panel.MIN_PRODUCT_IMAGES
+        ]
+        if not eksik:
+            print(f"✅ Tüm ürünlerin en az {panel.MIN_PRODUCT_IMAGES} görseli var\n")
+            return
+
+        print(f"🖼️ {len(eksik)} üründe görsel eksik (gereken {panel.MIN_PRODUCT_IMAGES}):\n")
+        for p in eksik:
+            print(f"   {p.get('image_count') or 0} görsel — {p['title'][:60]}")
+        print(
+            "\n👉 Bu ürünlerin gerçek tedarikçi fotoğrafları DSers'ten çekilmeli.\n"
+            "   Claude Code oturumunda 'eksik görselleri tamamla' de, kaynağı bulup yüklesin.\n"
+        )
+
+    def audit_catalog(self, quiet=False):
+        """Magazadaki her aktif urunu urun secim politikasindan gecirir.
+
+        Hicbir sey degistirmez - sadece rapor. Her urun icin gercek gorsel
+        sayisi, eBay'deki rakip ilan sayisi ve baslik/aciklamadan cikan iade
+        riski bayraklari degerlendirilip KALSIN / DUZELT / KALDIR onerisi
+        uretilir. Karar kullanicinin.
+
+        `quiet=True` (bkz. run_automatic): konsola yazmaz, yalnizca
+        KALDIR/DUZELT varsa panelde kirmizi bir ozet olayi birakir. Boylece
+        otomatik modda arkaplanda periyodik calisabilir, temiz katalogda
+        gereksiz log basmaz - sorun ciktiginda paneli acan gorur.
+
+        Not: tedarikci puani/satis adedi Shopify'da tutulmadigi icin burada
+        yoktur; o veri yalnizca kesif aninda (DSers) goruluyor. Bu yuzden
+        rapor "satilabilir mi" degil, "elimizdeki veriyle riskli mi"
+        sorusunu yanitlar.
+        """
+        import trust_score
+
+        def out(msg=""):
+            if not quiet:
+                print(msg)
+
+        try:
+            shopify = ShopifyClient()
+            products = shopify.get_active_products()
+        except Exception as e:
+            out(f"❌ Shopify'a bağlanılamadı: {e}\n")
+            return
+
+        try:
+            ebay = EbayClient()
+        except Exception:
+            ebay = None
+
+        out(f"\n🔍 {len(products)} aktif ürün denetleniyor...\n")
+        kaldir, duzelt, kalsin = [], [], []
+        for p in products:
+            gorsel = p.get("image_count") or 0
+            rakip = ebay.count_competing_listings(p["title"]) if ebay else None
+            riskler = trust_score.find_blockers({
+                "title": p["title"],
+                "description": panel.html_to_text(p.get("body_html", ""))[:400],
+                # Sadece elimizde olan sinyaller degerlendirilsin diye
+                # dogrulanabilir alanlar geciliyor; bilinmeyenler (puan,
+                # satis, stok) rapora "veri yok" olarak dusmesin.
+                "rating": trust_score.MIN_RATING,
+                "orders": trust_score.MIN_ORDERS,
+                "stock": trust_score.MIN_STOCK,
+                "images_count": gorsel,
+                "sell_price_min": p.get("price_min") or 0,
+                "cost_min": 0,
+            })
+            kategori_riski = [r for r in riskler if "fotograf" not in r and "Fiyat" not in r]
+            fiyat_riski = [r for r in riskler if "Fiyat" in r]
+
+            if kategori_riski:
+                oneri, hedef = "KALDIR", kaldir
+            elif gorsel < panel.MIN_PRODUCT_IMAGES:
+                oneri, hedef = "DÜZELT", duzelt
+            else:
+                oneri, hedef = "KALSIN", kalsin
+            hedef.append((p, gorsel, rakip, kategori_riski + fiyat_riski, oneri))
+
+        for baslik, grup in (
+            ("⛔ KALDIR — iade riski yüksek", kaldir),
+            ("🛠️ DÜZELT — görsel eksik", duzelt),
+            ("✅ KALSIN", kalsin),
+        ):
+            if not grup:
+                continue
+            out(f"{baslik} ({len(grup)})")
+            for p, gorsel, rakip, riskler, _ in grup:
+                rakip_txt = f"{rakip} rakip ilan" if rakip is not None else "rakip ?"
+                out(f"   • {p['title'][:52]}")
+                out(f"     {gorsel} görsel · {rakip_txt} · {p.get('price_min')} EUR")
+                for r in riskler:
+                    out(f"     ⚠️ {r}")
+            out()
+
+        # Temiz katalogda (hicbir sey KALDIR/DUZELT degilse) sessizce gecilir -
+        # her tur "her sey yolunda" olayi basmak, gercek sorunlari bogar.
+        if kaldir or duzelt or not quiet:
+            panel.log_event(
+                "urun",
+                f"Katalog denetimi: {len(kaldir)} kaldır, "
+                f"{len(duzelt)} düzelt, {len(kalsin)} kalsın",
+                "error" if kaldir else "success",
+            )
+        out("ℹ️ Bu rapor hiçbir ürünü değiştirmedi — karar senin.\n")
 
     def run_marketing(self, budget="yok"):
         if "MARKETING_AGENT" not in self.agents:
@@ -453,9 +625,19 @@ Başla!
         return result
 
     def run_automatic(self, interval_seconds=AUTO_INTERVAL_SECONDS):
+        # Katalog denetimi her turda degil, AUDIT_EVERY_N_CYCLES turda bir
+        # calisir (varsayilan 300s * 12 = ~1 saat) - hem eBay rakip API'sine
+        # her 5 dakikada 13+ istek atmamak icin hem de "her sey yolunda"
+        # olayini boguntu haline getirmemek icin. Kesinlikle bir sey KALDIR/
+        # DUZELT olarak isaretlenirse quiet modda bile panelde kirmizi olay
+        # birakir (bkz. audit_catalog), boylece riskli/eksik urun kimse
+        # bakmasa da fark edilir - bu otomatik modun tum amaci.
+        audit_every = max(1, round(3600 / interval_seconds))
         print(f"\n🤖 Otomatik mod başladı — her {interval_seconds} saniyede bir kontrol edilecek.")
+        print(f"   Katalog denetimi ~{audit_every} turda bir (yaklaşık saatte bir) çalışacak.")
         print("Durdurmak için Ctrl+C\n")
         panel.set_state(automatic_mode=True)
+        cycle = 0
         try:
             while True:
                 now = datetime.now()
@@ -483,6 +665,12 @@ Başla!
                 except Exception as e:
                     panel.log_event("otomatik", f"Stok senkronu hatası: {e}", "error")
                     print(f"❌ Stok senkronu sırasında beklenmeyen hata: {e}\n")
+                if cycle % audit_every == 0:
+                    try:
+                        self.audit_catalog(quiet=True)
+                    except Exception as e:
+                        panel.log_event("otomatik", f"Katalog denetimi hatası: {e}", "error")
+                cycle += 1
                 print(f"😴 {interval_seconds} saniye bekleniyor...\n")
                 time.sleep(interval_seconds)
         except KeyboardInterrupt:
@@ -526,6 +714,8 @@ def main():
     print("  4b. 'ebay' yazarak eBay'deki yeni siparişleri işle")
     print("  4c. 'stok' yazarak Shopify↔eBay stok senkronunu çalıştır")
     print("  5. 'urunler' yazarak products.json'daki yeni ürünleri mağazaya ekle")
+    print("  5b. 'gorseller' yazarak görseli eksik kalan ürünleri listele")
+    print("  5c. 'denetim' yazarak mağazadaki ürünleri iade riskine göre denetle")
     print("  6. 'otomatik' yazarak sürekli çalışan modu başlat (Ctrl+C ile durdur)")
     print("  7. 'pazarlama' yazarak ücretsiz müşteri bulma planı üret")
     print("  8. 'admin-ekle' / 'admin-liste' / 'admin-sil' ile panel girişlerini yönet")
@@ -556,6 +746,12 @@ def main():
 
             elif user_input.lower() == "urunler":
                 system.list_products()
+
+            elif user_input.lower() in ("gorseller", "görseller"):
+                system.backfill_product_images()
+
+            elif user_input.lower() == "denetim":
+                system.audit_catalog()
 
             elif user_input.lower() == "otomatik":
                 system.run_automatic()
